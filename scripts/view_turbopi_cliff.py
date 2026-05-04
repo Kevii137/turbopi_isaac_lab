@@ -17,7 +17,7 @@ parser.add_argument(
 )
 parser.add_argument("--duration", type=float, default=0.0, help="Run duration in seconds. 0 runs until closed.")
 parser.add_argument("--road_length", type=float, default=2.20, help="Outer length of the elevated track in meters.")
-parser.add_argument("--road_width", type=float, default=0.36, help="Width of each elevated track strip in meters.")
+parser.add_argument("--road_width", type=float, default=0.28, help="Width of each elevated track strip in meters.")
 parser.add_argument("--rectangle_half_width", type=float, default=0.78, help="Half-width of the rectangular track layout.")
 parser.add_argument("--cliff_height", type=float, default=1.35, help="Height of the road above the lower scenery.")
 parser.add_argument("--no_rollers", action="store_true", help="Skip procedural mecanum roller generation.")
@@ -42,10 +42,14 @@ from common import (
     hold_arm_posture,
     resolve_asset_usd,
     reset_robot_pose,
+    set_robot_camera_mount,
     spawn_turbopi,
     twist_to_wheel_targets,
     update_chase_camera,
 )
+
+CLIFF_CAMERA_POS = (0.080, 0.0, 0.030)
+CLIFF_CAMERA_ROT = (0.996195, 0.0, -0.087156, 0.0)
 
 
 def set_isometric_camera(sim: sim_utils.SimulationContext, viewport, scene_cfg: CliffRoadSceneCfg) -> str:
@@ -72,6 +76,7 @@ def main() -> None:
     )
     design_cliff_road_scene(scene_cfg)
     robot = spawn_turbopi(asset_usd=args_cli.asset_usd, add_rollers=not args_cli.no_rollers)
+    set_robot_camera_mount(CLIFF_CAMERA_POS, CLIFF_CAMERA_ROT)
 
     sim.reset()
     start_position, start_yaw = start_pose(scene_cfg)

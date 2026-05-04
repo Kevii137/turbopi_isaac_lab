@@ -10,12 +10,13 @@ class CliffRoadSceneCfg:
     """High cliff-side road scene for TurboPi visual inspection."""
 
     road_length: float = 2.20
-    road_width: float = 0.36
+    road_width: float = 0.28
     rectangle_half_width: float = 0.78
     deck_thickness: float = 0.08
     cliff_height: float = 1.35
     start_height: float = 0.04
     marker_width: float = 0.018
+    guide_width: float = 0.018
     lower_terrain_z: float = -0.32
 
 
@@ -112,7 +113,8 @@ def design_cliff_road_scene(scene_cfg: CliffRoadSceneCfg) -> None:
     half_y = 0.5 * scene_cfg.road_length
     half_x = scene_cfg.rectangle_half_width
     path_w = scene_cfg.road_width
-    road_color = (0.48, 0.55, 0.53)
+    road_color = (0.025, 0.026, 0.026)
+    guide_color = (0.96, 0.96, 0.92)
 
     # Four blue backdrop panels keep the scene from falling back to the gray
     # viewport background from any viewer angle.
@@ -180,9 +182,30 @@ def design_cliff_road_scene(scene_cfg: CliffRoadSceneCfg) -> None:
         "/World/CliffRoad/StartLine",
         size=(path_w, 0.050, 0.007),
         translation=(0.0, -half_y - 0.5 * path_w + 0.05, marker_z + 0.002),
-        color=(0.92, 0.92, 0.86),
+        color=guide_color,
         collision=False,
     )
+    guide_z = marker_z + 0.006
+    guide_w = scene_cfg.guide_width
+    vertical_guide_length = 2.0 * half_y - guide_w
+    bottom_guide_length = half_x - guide_w
+    guide_pieces = (
+        ("CenterGuide", (guide_w, vertical_guide_length, 0.006), (0.0, 0.0, guide_z)),
+        ("TopGuide", (2.0 * half_x, guide_w, 0.006), (0.0, half_y, guide_z)),
+        ("LeftGuide", (guide_w, vertical_guide_length, 0.006), (-half_x, 0.0, guide_z)),
+        ("RightGuide", (guide_w, vertical_guide_length, 0.006), (half_x, 0.0, guide_z)),
+        ("BottomLeftGuide", (bottom_guide_length, guide_w, 0.006), (-0.5 * half_x, -half_y, guide_z)),
+        ("BottomRightGuide", (bottom_guide_length, guide_w, 0.006), (0.5 * half_x, -half_y, guide_z)),
+    )
+    for name, size, translation in guide_pieces:
+        _cuboid(
+            f"/World/CliffRoad/{name}",
+            size=size,
+            translation=translation,
+            color=guide_color,
+            collision=False,
+            roughness=0.55,
+        )
 
     # Visual cliff supports sit below the track pieces. They do not provide
     # collision, so falling off the track is still a real physics failure.

@@ -217,12 +217,27 @@ def ensure_robot_camera(camera_path: str = ROBOT_CAMERA_PATH) -> str:
     camera = UsdGeom.Camera.Define(stage, camera_path)
     camera_prim = camera.GetPrim()
     _set_camera_common_attrs(camera)
+    set_robot_camera_mount(CAMERA_LINK_TO_SENSOR_POS, CAMERA_LINK_TO_SENSOR_ROT, camera_path=camera_path)
+    return camera_path
 
+
+def set_robot_camera_mount(
+    pos: tuple[float, float, float],
+    rot_wxyz: tuple[float, float, float, float],
+    *,
+    camera_path: str = ROBOT_CAMERA_PATH,
+) -> None:
+    """Set the robot camera prim transform relative to ``camera_link``."""
+    stage = get_current_stage()
+    camera_prim = stage.GetPrimAtPath(camera_path)
+    if not camera_prim.IsValid():
+        camera = UsdGeom.Camera.Define(stage, camera_path)
+        camera_prim = camera.GetPrim()
+        _set_camera_common_attrs(camera)
     xformable = UsdGeom.Xformable(camera_prim)
     xformable.ClearXformOpOrder()
-    xformable.AddTranslateOp().Set(Gf.Vec3d(*CAMERA_LINK_TO_SENSOR_POS))
-    xformable.AddOrientOp().Set(Gf.Quatf(*CAMERA_LINK_TO_SENSOR_ROT))
-    return camera_path
+    xformable.AddTranslateOp().Set(Gf.Vec3d(*pos))
+    xformable.AddOrientOp().Set(Gf.Quatf(*rot_wxyz))
 
 
 def ensure_chase_camera(camera_path: str = CHASE_CAMERA_PATH) -> str:
