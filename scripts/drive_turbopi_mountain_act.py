@@ -71,8 +71,9 @@ from common import (
 )
 from mountain_cliff_scene import MountainCliffSceneCfg, design_mountain_cliff_scene, start_pose
 
-CAMERA_POS = (0.080, 0.0, 0.030)
-CAMERA_ROT = (0.996195, 0.0, -0.087156, 0.0)
+CAMERA_POS = (0.140, 0.0, 0.115)
+CAMERA_ROT = (0.987688, 0.0, -0.156434, 0.0)
+POLICY_CAMERA_PATH = "/World/TurboPiPolicyRobotCamera"
 
 
 class StopFlag:
@@ -95,7 +96,44 @@ def get_pose(robot) -> tuple[float, float, float]:
 
 
 def build_camera(width: int, height: int) -> Camera:
-    return Camera(CameraCfg(prim_path=ROBOT_CAMERA_PATH, update_period=0.0, height=height, width=width, data_types=["rgb"], spawn=None))
+    return Camera(
+        CameraCfg(
+            prim_path=POLICY_CAMERA_PATH,
+            update_period=0.0,
+            height=height,
+            width=width,
+            data_types=["rgb"],
+            spawn=sim_utils.PinholeCameraCfg(
+                focal_length=18.0,
+                focus_distance=400.0,
+                horizontal_aperture=20.955,
+                clipping_range=(0.03, 100.0),
+            ),
+        )
+    )
+
+
+def update_policy_camera(camera: Camera, robot) -> None:
+    base_pos = robot.data.root_pos_w[0]
+    _, _, yaw_t = euler_xyz_from_quat(robot.data.root_quat_w)
+    yaw = float(yaw_t[0].item())
+    cos_yaw = np.cos(yaw)
+    sin_yaw = np.sin(yaw)
+
+    def to_world(offset: tuple[float, float, float]) -> list[float]:
+        x, y, z = offset
+        return [
+            float(base_pos[0].item()) + cos_yaw * x - sin_yaw * y,
+            float(base_pos[1].item()) + sin_yaw * x + cos_yaw * y,
+            float(base_pos[2].item()) + z,
+        ]
+
+    eye = to_world((0.18, 0.0, 0.18))
+    target = to_world((1.35, 0.0, 0.04))
+    camera.set_world_poses_from_view(
+        torch.tensor([eye], dtype=torch.float32, device=robot.device),
+        torch.tensor([target], dtype=torch.float32, device=robot.device),
+    )
 
 
 def rgb_frame(camera: Camera) -> np.ndarray:
@@ -175,8 +213,12 @@ def main() -> None:
         viewport.set_active_camera(PERSPECTIVE_CAMERA_PATH)
         sim.set_camera_view(eye=[1.75, -2.50, scene_cfg.road_z + 1.35], target=[0.75, 0.95, scene_cfg.road_z])
         active_view = "isometric"
+    elif args_cli.view == "robot" and viewport is not None:
+        viewport.set_active_camera(POLICY_CAMERA_PATH)
+        active_view = "robot"
     pose = (float(start_position[0]), float(start_position[1]), float(start_yaw))
     for _ in range(max(1, args_cli.settle_steps + args_cli.camera_warmup_steps)):
+        update_policy_camera(camera, robot)
         sim.step()
         robot.update(physics_dt)
         camera.update(dt=physics_dt)
@@ -209,6 +251,7 @@ def main() -> None:
                     update_chase_camera(robot, viewport)
                 if args_cli.control_mode == "dynamic":
                     pose = get_pose(robot)
+            update_policy_camera(camera, robot)
             camera.update(dt=control_dt)
             elapsed += control_dt
             if args_cli.duration > 0 and elapsed >= args_cli.duration:
