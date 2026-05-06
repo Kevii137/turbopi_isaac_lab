@@ -25,9 +25,9 @@ parser.add_argument(
 parser.add_argument("--road_width", type=float, default=0.48, help="Drivable mountain-road width in meters.")
 parser.add_argument("--road_z", type=float, default=0.82, help="Road height above the valley floor.")
 parser.add_argument("--lower_terrain_z", type=float, default=-0.42, help="Lower valley height.")
-parser.add_argument("--vx", type=float, default=0.28, help="Forward/backward speed in m/s for a full key press.")
-parser.add_argument("--vy", type=float, default=0.18, help="Lateral speed in m/s for a full key press.")
-parser.add_argument("--wz", type=float, default=1.00, help="Yaw rate in rad/s for a full key press.")
+parser.add_argument("--vx", type=float, default=0.36, help="Forward/backward speed in m/s for a full key press.")
+parser.add_argument("--vy", type=float, default=0.22, help="Lateral speed in m/s for a full key press.")
+parser.add_argument("--wz", type=float, default=1.15, help="Yaw rate in rad/s for a full key press.")
 parser.add_argument(
     "--command_filter",
     type=float,

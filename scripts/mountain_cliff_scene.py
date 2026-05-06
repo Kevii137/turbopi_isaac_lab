@@ -52,7 +52,6 @@ RIGHT_BRANCH_CENTERLINE: tuple[tuple[float, float], ...] = (
     (3.24, 0.46),
     (3.66, -0.16),
     (3.86, -0.88),
-    (3.74, -1.58),
 )
 
 
@@ -272,7 +271,6 @@ def _spawn_road(scene_cfg: MountainCliffSceneCfg) -> None:
     road_color = (0.18, 0.13, 0.085)
     dust_color = (0.32, 0.24, 0.16)
     edge_color = (0.39, 0.34, 0.27)
-    rut_color = (0.12, 0.085, 0.055)
     gravel_color = (0.40, 0.36, 0.29)
     deck_z = scene_cfg.road_z - 0.5 * scene_cfg.road_thickness
     surface_z = scene_cfg.road_z + 0.008
@@ -282,6 +280,15 @@ def _spawn_road(scene_cfg: MountainCliffSceneCfg) -> None:
         cx, cy, ux, uy, yaw = _segment_geometry(start, end)
         length = math.dist(start, end)
         total_width = scene_cfg.road_width + 2.0 * scene_cfg.shoulder_width
+        _cuboid(
+            f"/World/MountainCliffRoad/RoadRockShelf{idx:02d}",
+            size=(total_width + 0.22, length + 0.12, 0.16),
+            translation=(cx, cy, scene_cfg.road_z - 0.145),
+            color=(0.29, 0.25, 0.20),
+            collision=True,
+            roughness=0.99,
+            yaw=yaw,
+        )
         _cuboid(
             f"/World/MountainCliffRoad/RoadSegment{idx:02d}",
             size=(total_width, length + 0.06, scene_cfg.road_thickness),
@@ -300,34 +307,18 @@ def _spawn_road(scene_cfg: MountainCliffSceneCfg) -> None:
             roughness=0.98,
             yaw=yaw,
         )
-        for side, side_sign in (("Left", -1.0), ("Right", 1.0)):
-            ox = -uy * side_sign * (0.5 * scene_cfg.road_width - 0.025)
-            oy = ux * side_sign * (0.5 * scene_cfg.road_width - 0.025)
-            _cuboid(
-                f"/World/MountainCliffRoad/{side}GravelEdge{idx:02d}",
-                size=(0.030, length - 0.030, 0.007),
-                translation=(cx + ox, cy + oy, mark_z),
-                color=edge_color,
-                collision=False,
-                roughness=0.95,
-                yaw=yaw,
-            )
-        for rut_idx, side_sign in enumerate((-1.0, 1.0)):
-            for patch_idx, t in enumerate((0.24, 0.54, 0.80)):
-                patch_len = max(0.10, min(0.28, length * 0.24))
-                lateral = 0.096 + 0.014 * ((idx + patch_idx) % 2)
-                ox = -uy * side_sign * lateral
-                oy = ux * side_sign * lateral
-                px = start[0] + t * (end[0] - start[0]) + ox
-                py = start[1] + t * (end[1] - start[1]) + oy
+        if idx not in {4, 5, 6}:
+            for side, side_sign in (("Left", -1.0), ("Right", 1.0)):
+                ox = -uy * side_sign * (0.5 * scene_cfg.road_width - 0.025)
+                oy = ux * side_sign * (0.5 * scene_cfg.road_width - 0.025)
                 _cuboid(
-                    f"/World/MountainCliffRoad/Rut{idx:02d}_{rut_idx:02d}_{patch_idx:02d}",
-                    size=(0.024, patch_len, 0.005),
-                    translation=(px, py, mark_z + 0.002),
-                    color=rut_color,
+                    f"/World/MountainCliffRoad/{side}GravelEdge{idx:02d}",
+                    size=(0.030, length - 0.030, 0.007),
+                    translation=(cx + ox, cy + oy, mark_z),
+                    color=edge_color,
                     collision=False,
-                    roughness=1.0,
-                    yaw=yaw + 0.025 * ((idx + patch_idx) % 3 - 1),
+                    roughness=0.95,
+                    yaw=yaw,
                 )
         for dash_idx in range(max(1, int(length / 0.22))):
             t = (dash_idx + 0.35) / max(1, int(length / 0.22))
@@ -368,7 +359,6 @@ def _spawn_right_branch(scene_cfg: MountainCliffSceneCfg) -> None:
     road_color = (0.18, 0.13, 0.085)
     dust_color = (0.31, 0.23, 0.15)
     edge_color = (0.38, 0.33, 0.26)
-    rut_color = (0.11, 0.078, 0.050)
     deck_z = scene_cfg.road_z - 0.5 * scene_cfg.road_thickness
     surface_z = scene_cfg.road_z + 0.008
     mark_z = scene_cfg.road_z + 0.015
@@ -404,34 +394,19 @@ def _spawn_right_branch(scene_cfg: MountainCliffSceneCfg) -> None:
             roughness=0.98,
             yaw=yaw,
         )
-        for side, side_sign in (("Left", -1.0), ("Right", 1.0)):
-            ox = -uy * side_sign * (0.5 * scene_cfg.road_width - 0.025)
-            oy = ux * side_sign * (0.5 * scene_cfg.road_width - 0.025)
-            _cuboid(
-                f"/World/MountainCliffRoad/RightBranch{side}Edge{idx:02d}",
-                size=(0.026, max(0.10, length - 0.04), 0.007),
-                translation=(cx + ox, cy + oy, mark_z),
-                color=edge_color,
-                collision=False,
-                roughness=0.96,
-                yaw=yaw,
-            )
-        for rut_idx, side_sign in enumerate((-1.0, 1.0)):
-            for patch_idx, t in enumerate((0.32, 0.68)):
-                ox = -uy * side_sign * 0.10
-                oy = ux * side_sign * 0.10
-                px = start[0] + t * (end[0] - start[0]) + ox
-                py = start[1] + t * (end[1] - start[1]) + oy
+        if idx > 1:
+            for side, side_sign in (("Left", -1.0), ("Right", 1.0)):
+                ox = -uy * side_sign * (0.5 * scene_cfg.road_width - 0.025)
+                oy = ux * side_sign * (0.5 * scene_cfg.road_width - 0.025)
                 _cuboid(
-                    f"/World/MountainCliffRoad/RightBranchRut{idx:02d}_{rut_idx:02d}_{patch_idx:02d}",
-                    size=(0.022, max(0.10, min(0.24, length * 0.26)), 0.005),
-                    translation=(px, py, mark_z + 0.002),
-                    color=rut_color,
+                    f"/World/MountainCliffRoad/RightBranch{side}Edge{idx:02d}",
+                    size=(0.026, max(0.10, length - 0.04), 0.007),
+                    translation=(cx + ox, cy + oy, mark_z),
+                    color=edge_color,
                     collision=False,
-                    roughness=1.0,
+                    roughness=0.96,
                     yaw=yaw,
                 )
-
     for idx, point in enumerate(RIGHT_BRANCH_CENTERLINE[:-1]):
         _cylinder(
             f"/World/MountainCliffRoad/RightBranchCurvePatch{idx:02d}",
@@ -508,6 +483,84 @@ def _spawn_guard_rails(scene_cfg: MountainCliffSceneCfg) -> None:
                 )
 
 
+def _spawn_right_side_barricades(scene_cfg: MountainCliffSceneCfg) -> None:
+    """Add physical low barricades on the open right edge and branch road."""
+    post_color = (0.34, 0.29, 0.22)
+    rail_color = (0.60, 0.56, 0.48)
+    barrier_specs = (
+        ("ApproachRight", ROAD_CENTERLINE[:6], -1.0, 0.5 * scene_cfg.road_width + scene_cfg.shoulder_width + 0.030),
+        ("MainRight", ROAD_CENTERLINE[7:], -1.0, 0.5 * scene_cfg.road_width + scene_cfg.shoulder_width + 0.030),
+        ("BranchRight", RIGHT_BRANCH_CENTERLINE[2:], 1.0, 0.5 * scene_cfg.road_width + scene_cfg.shoulder_width + 0.025),
+    )
+    for name, centerline, side_sign, offset in barrier_specs:
+        for idx, (start, end) in enumerate(zip(centerline[:-1], centerline[1:], strict=False)):
+            cx, cy, ux, uy, yaw = _segment_geometry(start, end)
+            length = math.dist(start, end)
+            ox = -uy * side_sign * offset
+            oy = ux * side_sign * offset
+            _cuboid(
+                f"/World/MountainCliffRoad/{name}BarricadeRail{idx:02d}",
+                size=(0.026, max(0.12, length - 0.18), 0.020),
+                translation=(cx + ox, cy + oy, scene_cfg.road_z + 0.095),
+                color=rail_color,
+                collision=True,
+                roughness=0.82,
+                yaw=yaw,
+            )
+            post_count = max(2, int(length / 0.34))
+            for post_idx in range(post_count):
+                if post_idx % 3 == 2:
+                    continue
+                t = (post_idx + 0.5) / post_count
+                px = start[0] + t * (end[0] - start[0]) + ox
+                py = start[1] + t * (end[1] - start[1]) + oy
+                _cuboid(
+                    f"/World/MountainCliffRoad/{name}BarricadePost{idx:02d}_{post_idx:02d}",
+                    size=(0.030, 0.030, 0.095),
+                    translation=(px, py, scene_cfg.road_z + 0.045),
+                    color=post_color,
+                    collision=True,
+                    roughness=0.90,
+                    yaw=yaw,
+                )
+
+
+def _spawn_road_end_caps(scene_cfg: MountainCliffSceneCfg) -> None:
+    """Mark the end of each fork without extending the road branches."""
+    cap_color = (0.55, 0.51, 0.43)
+    post_color = (0.34, 0.29, 0.22)
+    for name, centerline in (("LeftFork", ROAD_CENTERLINE), ("RightFork", RIGHT_BRANCH_CENTERLINE)):
+        prev_point = centerline[-2]
+        end_point = centerline[-1]
+        _, _, _, _, yaw = _segment_geometry(prev_point, end_point)
+        _cuboid(
+            f"/World/MountainCliffRoad/{name}EndRail",
+            size=(scene_cfg.road_width + 2.0 * scene_cfg.shoulder_width + 0.12, 0.040, 0.070),
+            translation=(end_point[0], end_point[1], scene_cfg.road_z + 0.075),
+            color=cap_color,
+            collision=True,
+            roughness=0.84,
+            yaw=yaw,
+        )
+        for label, side_sign in (("Left", -1.0), ("Right", 1.0)):
+            x, y = _offset_point(
+                prev_point,
+                end_point,
+                t=1.0,
+                side_sign=side_sign,
+                offset=0.5 * scene_cfg.road_width + scene_cfg.shoulder_width,
+            )
+            _cuboid(
+                f"/World/MountainCliffRoad/{name}EndPost{label}",
+                size=(0.045, 0.045, 0.140),
+                translation=(x, y, scene_cfg.road_z + 0.070),
+                color=post_color,
+                collision=True,
+                roughness=0.90,
+                yaw=yaw,
+            )
+
+
 def _spawn_terrain(scene_cfg: MountainCliffSceneCfg) -> None:
     def valley_height(x: float, y: float) -> float:
         ripple = 0.055 * math.sin(2.7 * x + 0.4) + 0.045 * math.cos(2.2 * y - 0.6)
@@ -521,55 +574,89 @@ def _spawn_terrain(scene_cfg: MountainCliffSceneCfg) -> None:
         ridge += 0.16 * math.cos(1.35 * x - 0.25 * y)
         return scene_cfg.lower_terrain_z + ridge + 0.08 * abs(x)
 
+    def high_mountain_height(x: float, y: float) -> float:
+        distance = max(0.0, y - 8.0)
+        ridge = 0.42 + 0.12 * distance + 0.09 * abs(x)
+        ridge += 0.22 * math.sin(0.54 * y + 0.30 * x)
+        ridge += 0.14 * math.cos(1.00 * x - 0.16 * y)
+        return scene_cfg.lower_terrain_z + ridge
+
+    def right_mountain_height(x: float, y: float) -> float:
+        distance = max(0.0, x - 3.1)
+        ridge = 0.22 + 0.18 * distance + 0.04 * max(0.0, y + 2.0)
+        ridge += 0.18 * math.sin(0.85 * y + 0.55 * x)
+        ridge += 0.12 * math.cos(1.20 * x - 0.30 * y)
+        return scene_cfg.lower_terrain_z + ridge
+
     _mesh_grid(
         "/World/MountainCliffRoad/ValleyGround",
-        x_range=(-4.2, 4.2),
-        y_range=(-3.2, 6.4),
-        nx=48,
-        ny=64,
+        x_range=(-5.0, 5.0),
+        y_range=(-4.2, 9.4),
+        nx=54,
+        ny=78,
         height_fn=valley_height,
         color=(0.22, 0.20, 0.16),
         collision=True,
     )
     _mesh_grid(
         "/World/MountainCliffRoad/FarMountainRidges",
-        x_range=(-5.8, 5.8),
-        y_range=(3.2, 7.2),
-        nx=48,
-        ny=28,
+        x_range=(-6.8, 6.8),
+        y_range=(3.2, 10.6),
+        nx=56,
+        ny=40,
         height_fn=far_mountain_height,
         color=(0.24, 0.22, 0.19),
         collision=True,
     )
     _mesh_grid(
+        "/World/MountainCliffRoad/DistantHighMountains",
+        x_range=(-8.6, 8.6),
+        y_range=(8.4, 15.0),
+        nx=60,
+        ny=34,
+        height_fn=high_mountain_height,
+        color=(0.27, 0.26, 0.23),
+        collision=True,
+    )
+    _mesh_grid(
+        "/World/MountainCliffRoad/RightFarMountains",
+        x_range=(3.1, 8.2),
+        y_range=(-3.6, 9.6),
+        nx=30,
+        ny=64,
+        height_fn=right_mountain_height,
+        color=(0.25, 0.23, 0.20),
+        collision=True,
+    )
+    _mesh_grid(
         "/World/MountainCliffRoad/LeftRockSlope",
         x_range=(-3.00, -1.58),
-        y_range=(-2.8, 5.4),
+        y_range=(-3.4, 8.6),
         nx=12,
-        ny=54,
+        ny=72,
         height_fn=lambda x, y: scene_cfg.lower_terrain_z + 0.30 + 0.78 * (-1.58 - x) + 0.06 * math.sin(4.0 * y),
         color=(0.27, 0.23, 0.19),
         collision=True,
     )
     _mesh_grid(
         "/World/MountainCliffRoad/RightDropSlope",
-        x_range=(1.35, 2.90),
-        y_range=(-2.8, 5.8),
+        x_range=(1.35, 3.55),
+        y_range=(-3.4, 8.8),
         nx=12,
-        ny=54,
+        ny=72,
         height_fn=lambda x, y: scene_cfg.lower_terrain_z + 0.18 + 0.22 * (x - 1.35) + 0.05 * math.cos(3.5 * y),
         color=(0.20, 0.19, 0.17),
         collision=True,
     )
     _mesh_grid(
         "/World/MountainCliffRoad/ForwardRollingHills",
-        x_range=(-2.6, 3.4),
-        y_range=(1.6, 5.6),
-        nx=36,
-        ny=36,
+        x_range=(-3.2, 4.2),
+        y_range=(1.6, 9.2),
+        nx=42,
+        ny=52,
         height_fn=lambda x, y: scene_cfg.lower_terrain_z
         + 0.12
-        + 0.12 * (y - 1.6)
+        + 0.095 * (y - 1.6)
         + 0.09 * math.sin(2.1 * x + 0.7 * y)
         + 0.05 * math.cos(3.0 * y),
         color=(0.23, 0.22, 0.18),
@@ -587,17 +674,25 @@ def _spawn_terrain(scene_cfg: MountainCliffSceneCfg) -> None:
     )
     _cuboid(
         "/World/MountainCliffRoad/LowerSolidGround",
-        size=(9.0, 10.5, 0.060),
-        translation=(0.0, 1.6, scene_cfg.lower_terrain_z - 0.10),
+        size=(11.0, 14.5, 0.060),
+        translation=(0.0, 2.4, scene_cfg.lower_terrain_z - 0.10),
         color=(0.17, 0.16, 0.13),
+        collision=True,
+        roughness=1.0,
+    )
+    _cuboid(
+        "/World/MountainCliffRoad/FallCatchFloor",
+        size=(9.4, 12.8, 0.060),
+        translation=(0.30, 1.85, scene_cfg.lower_terrain_z - 0.045),
+        color=(0.20, 0.19, 0.16),
         collision=True,
         roughness=1.0,
     )
 
     _cuboid(
         "/World/MountainCliffRoad/River",
-        size=(0.20, 8.8, 0.006),
-        translation=(2.10, 1.55, scene_cfg.lower_terrain_z - 0.025),
+        size=(0.20, 12.4, 0.006),
+        translation=(2.42, 2.10, scene_cfg.lower_terrain_z - 0.025),
         color=(0.03, 0.22, 0.34),
         collision=False,
         roughness=0.25,
@@ -606,8 +701,8 @@ def _spawn_terrain(scene_cfg: MountainCliffSceneCfg) -> None:
     for idx, x_offset in enumerate((-0.05, 0.04, 0.095)):
         _cuboid(
             f"/World/MountainCliffRoad/RiverHighlight{idx:02d}",
-            size=(0.024, 7.50 - 0.40 * idx, 0.004),
-            translation=(2.10 + x_offset, 1.45 + 0.10 * idx, scene_cfg.lower_terrain_z - 0.019),
+            size=(0.024, 10.8 - 0.40 * idx, 0.004),
+            translation=(2.42 + x_offset, 2.00 + 0.10 * idx, scene_cfg.lower_terrain_z - 0.019),
             color=(0.12, 0.42, 0.58),
             collision=False,
             roughness=0.22,
@@ -621,6 +716,8 @@ def _spawn_terrain(scene_cfg: MountainCliffSceneCfg) -> None:
             (2.30, 2.00, 0.20, 0.66),
             (1.88, 3.20, 0.24, 0.82),
             (2.34, 4.40, 0.22, 0.70),
+            (2.70, 5.70, 0.26, 0.76),
+            (2.22, 7.10, 0.22, 0.62),
         )
     ):
         _cuboid(
@@ -657,6 +754,12 @@ def _spawn_rocks_and_plants(scene_cfg: MountainCliffSceneCfg) -> None:
         (0.14, 3.04, 0.13, (0.35, 0.30, 0.24)),
         (-0.56, 3.72, 0.20, (0.30, 0.27, 0.23)),
         (2.42, 2.78, 0.22, (0.27, 0.25, 0.22)),
+        (-1.32, 4.48, 0.16, (0.31, 0.27, 0.23)),
+        (-1.64, 5.22, 0.20, (0.28, 0.25, 0.22)),
+        (-0.42, 5.84, 0.14, (0.35, 0.30, 0.24)),
+        (0.94, 5.92, 0.17, (0.30, 0.27, 0.23)),
+        (3.22, -2.18, 0.18, (0.30, 0.26, 0.22)),
+        (2.12, -2.78, 0.15, (0.34, 0.29, 0.24)),
     )
     for idx, (x, y, radius, color) in enumerate(rock_specs):
         _spawn_boulder_cluster(
@@ -681,6 +784,13 @@ def _spawn_rocks_and_plants(scene_cfg: MountainCliffSceneCfg) -> None:
         (1.62, -0.18, 0.052),
         (1.78, 0.38, 0.042),
         (1.86, 0.94, 0.058),
+        (-0.92, 3.82, 0.050),
+        (-1.22, 4.58, 0.060),
+        (-0.98, 5.12, 0.046),
+        (-0.34, 5.76, 0.052),
+        (0.52, 6.08, 0.056),
+        (3.56, -1.80, 0.054),
+        (3.12, -2.42, 0.060),
     ]
     for idx, (x, y, radius) in enumerate(talus_specs):
         _sphere(
@@ -756,6 +866,8 @@ def design_mountain_cliff_scene(scene_cfg: MountainCliffSceneCfg) -> None:
     _spawn_road(scene_cfg)
     _spawn_right_branch(scene_cfg)
     _spawn_guard_rails(scene_cfg)
+    _spawn_right_side_barricades(scene_cfg)
+    _spawn_road_end_caps(scene_cfg)
     _spawn_rocks_and_plants(scene_cfg)
 
 
