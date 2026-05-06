@@ -39,6 +39,7 @@ parser.add_argument("--min_forward_speed", type=float, default=0.09)
 parser.add_argument("--max_wz", type=float, default=1.35)
 parser.add_argument("--position_tolerance", type=float, default=0.075)
 parser.add_argument("--switch_distance", type=float, default=0.095)
+parser.add_argument("--finish_progress", type=float, default=0.985)
 parser.add_argument("--lookahead_distance", type=float, default=0.18)
 parser.add_argument("--approach_distance", type=float, default=0.22)
 parser.add_argument("--heading_gain", type=float, default=2.4)
@@ -360,17 +361,18 @@ def run_episode(sim, robot, camera, wheel_joint_ids, arm_joint_ids, viewport, vi
         progress_m = route_progress((pose[0], pose[1]), route, segment_index)
         progress_ratio = progress_m / max(route.length, 1e-6)
         error = distance_to_segment((pose[0], pose[1]), segment)
+        command, _yaw_error, dist = compute_command(pose, segment)
+        is_final_segment = segment_index >= len(route.segments) - 1
+        if is_final_segment and (dist <= args_cli.switch_distance or progress_ratio >= args_cli.finish_progress):
+            terminal_reason = "goal_reached"
+            success = True
+            break
+        if dist <= args_cli.switch_distance:
+            segment_index += 1
+            continue
         if error > args_cli.off_track_abort_distance:
             terminal_reason = "off_track"
             break
-        command, _yaw_error, dist = compute_command(pose, segment)
-        if dist <= args_cli.switch_distance:
-            if segment_index >= len(route.segments) - 1:
-                terminal_reason = "goal_reached"
-                success = True
-                break
-            segment_index += 1
-            continue
         if progress_m >= best_progress + args_cli.progress_epsilon:
             best_progress = progress_m
             last_progress_time = step_index * control_dt
