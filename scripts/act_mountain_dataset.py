@@ -66,6 +66,7 @@ class ACTMountainSessionWriter:
         physics_dt: float,
         tasks: tuple[str, ...],
         task_instructions: dict[str, str],
+        record_camera: str = "robot",
     ):
         self.output_root = Path(output_root)
         self.session_name = session_name
@@ -77,6 +78,7 @@ class ACTMountainSessionWriter:
         self.physics_dt = float(physics_dt)
         self.tasks = tuple(tasks)
         self.task_instructions = dict(task_instructions)
+        self.record_camera = record_camera
         self.parquet_engine = resolve_parquet_engine()
         self.session_dir = self.output_root / self.session_name
         self.session_dir.mkdir(parents=True, exist_ok=True)
@@ -139,6 +141,7 @@ class ACTMountainSessionWriter:
             "control_hz": self.control_hz,
             "physics_dt": self.physics_dt,
             "fps": self.fps,
+            "record_camera": self.record_camera,
             "accepted_episodes": self.accepted_episodes,
             "failed_attempts": self.failed_attempts,
             "total_frames": self.total_frames,

@@ -25,6 +25,12 @@ DEFAULT_OUTPUT_DIR = REPO_ROOT / "data" / "act_mountain_cliff"
 parser = argparse.ArgumentParser(description="Record mountain cliff ACT language episodes.")
 parser.add_argument("--asset_usd", type=str, default=None)
 parser.add_argument("--view", choices=("isometric", "overview", "chase", "robot"), default="chase")
+parser.add_argument(
+    "--record_camera",
+    choices=("view", "robot", "isometric"),
+    default="view",
+    help="Camera saved into video.mp4. 'view' follows --view when possible.",
+)
 parser.add_argument("--output_dir", type=str, default=str(DEFAULT_OUTPUT_DIR))
 parser.add_argument("--session_name", type=str, default=None)
 parser.add_argument("--dataset_name", type=str, default="turbopi_mountain_act_cvae")
@@ -142,8 +148,48 @@ def build_session_name() -> str:
     return args_cli.session_name or datetime.utcnow().strftime("session_mountain_act_%Y%m%d_%H%M%S")
 
 
-def build_camera(width: int, height: int) -> Camera:
-    return Camera(CameraCfg(prim_path=ROBOT_CAMERA_PATH, update_period=0.0, height=height, width=width, data_types=["rgb"], spawn=None))
+def resolve_record_camera_mode() -> str:
+    if args_cli.record_camera != "view":
+        return args_cli.record_camera
+    return "isometric" if args_cli.view == "isometric" else "robot"
+
+
+def build_camera(width: int, height: int, *, mode: str) -> Camera:
+    if mode == "robot":
+        return Camera(
+            CameraCfg(
+                prim_path=ROBOT_CAMERA_PATH,
+                update_period=0.0,
+                height=height,
+                width=width,
+                data_types=["rgb"],
+                spawn=None,
+            )
+        )
+    return Camera(
+        CameraCfg(
+            prim_path="/World/MountainACTRecordCamera",
+            update_period=0.0,
+            height=height,
+            width=width,
+            data_types=["rgb"],
+            spawn=sim_utils.PinholeCameraCfg(
+                focal_length=20.0,
+                focus_distance=400.0,
+                horizontal_aperture=20.955,
+                clipping_range=(0.05, 100.0),
+            ),
+        )
+    )
+
+
+def position_record_camera(camera: Camera, *, mode: str, scene_cfg: MountainCliffSceneCfg, device: str) -> None:
+    if mode != "isometric":
+        return
+    camera.set_world_poses_from_view(
+        torch.tensor([[3.10, -3.30, scene_cfg.road_z + 1.80]], dtype=torch.float32, device=device),
+        torch.tensor([[0.35, 1.15, scene_cfg.road_z - 0.10]], dtype=torch.float32, device=device),
+    )
 
 
 def build_segment(start_xy: tuple[float, float], goal_xy: tuple[float, float]) -> Segment:
@@ -391,8 +437,10 @@ def main() -> None:
     design_mountain_cliff_scene(scene_cfg)
     robot = spawn_turbopi(asset_usd=args_cli.asset_usd, add_rollers=not args_cli.no_rollers)
     set_robot_camera_mount(CAMERA_POS, CAMERA_ROT)
-    camera = build_camera(args_cli.image_width, args_cli.image_height)
+    record_camera_mode = resolve_record_camera_mode()
+    camera = build_camera(args_cli.image_width, args_cli.image_height, mode=record_camera_mode)
     sim.reset()
+    position_record_camera(camera, mode=record_camera_mode, scene_cfg=scene_cfg, device=robot.device)
     camera.update(dt=0.0)
     sim.play()
     wheel_joint_ids = get_wheel_joint_ids(robot)
@@ -412,12 +460,14 @@ def main() -> None:
         physics_dt=physics_dt,
         tasks=TASKS,
         task_instructions=TASK_INSTRUCTIONS,
+        record_camera=record_camera_mode,
     )
     stop_flag = StopFlag()
     signal.signal(signal.SIGINT, stop_flag.request)
     signal.signal(signal.SIGTERM, stop_flag.request)
     rng = np.random.default_rng(args_cli.seed)
     print(f"[record] Output session: {writer.session_dir}")
+    print(f"[record] Saved video camera: {record_camera_mode}")
     saved = 0
     attempts = 0
     try:
