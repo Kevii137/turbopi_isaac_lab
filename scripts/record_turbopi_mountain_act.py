@@ -56,6 +56,10 @@ parser.add_argument("--min_image_std", type=float, default=5.0)
 parser.add_argument("--action_noise_std", type=float, default=0.0)
 parser.add_argument("--seed", type=int, default=0)
 parser.add_argument("--no_rollers", action="store_true")
+parser.add_argument("--video_output_dir", type=str, default=None, help="Optional directory for high-res teacher episode MP4s.")
+parser.add_argument("--video_width", type=int, default=1080)
+parser.add_argument("--video_height", type=int, default=1080)
+parser.add_argument("--video_fps", type=float, default=30.0)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 args_cli.enable_cameras = True
@@ -69,6 +73,7 @@ simulation_app = app_launcher.app
 
 import numpy as np
 import torch
+import cv2
 
 import isaaclab.sim as sim_utils
 from isaaclab.sensors import Camera, CameraCfg
@@ -101,6 +106,8 @@ from mountain_cliff_scene import (
 CAMERA_POS = (0.140, 0.0, 0.115)
 CAMERA_ROT = (0.987688, 0.0, -0.156434, 0.0)
 POLICY_CAMERA_PATH = "/World/TurboPiPolicyRobotCamera"
+VIDEO_CAMERA_ROOT = "/World/TurboPiRecorderVideoCamera"
+VIDEO_VIEWS = ("robot", "chase", "isometric")
 MAX_COMMAND = np.array([0.45, 0.35, 2.0, 1.0], dtype=np.float32)
 
 
@@ -144,22 +151,40 @@ def build_session_name() -> str:
     return args_cli.session_name or datetime.utcnow().strftime("session_mountain_act_%Y%m%d_%H%M%S")
 
 
-def build_camera(width: int, height: int) -> Camera:
+def build_camera(
+    width: int,
+    height: int,
+    *,
+    prim_path: str = POLICY_CAMERA_PATH,
+    focal_length: float = 18.0,
+) -> Camera:
     return Camera(
         CameraCfg(
-            prim_path=POLICY_CAMERA_PATH,
+            prim_path=prim_path,
             update_period=0.0,
             height=height,
             width=width,
             data_types=["rgb"],
             spawn=sim_utils.PinholeCameraCfg(
-                focal_length=18.0,
+                focal_length=focal_length,
                 focus_distance=400.0,
                 horizontal_aperture=20.955,
                 clipping_range=(0.03, 100.0),
             ),
         )
     )
+
+
+def build_video_cameras(width: int, height: int) -> dict[str, Camera]:
+    return {
+        view: build_camera(
+            width,
+            height,
+            prim_path=f"{VIDEO_CAMERA_ROOT}_{view}",
+            focal_length=20.0,
+        )
+        for view in VIDEO_VIEWS
+    }
 
 
 def update_policy_camera(camera: Camera, robot) -> None:
@@ -183,6 +208,100 @@ def update_policy_camera(camera: Camera, robot) -> None:
         torch.tensor([eye], dtype=torch.float32, device=robot.device),
         torch.tensor([target], dtype=torch.float32, device=robot.device),
     )
+
+
+def camera_pose_from_robot(robot, eye_offset: tuple[float, float, float], target_offset: tuple[float, float, float]) -> tuple[list[float], list[float]]:
+    base_pos = robot.data.root_pos_w[0]
+    _, _, yaw_t = euler_xyz_from_quat(robot.data.root_quat_w)
+    yaw = float(yaw_t[0].item())
+    cos_yaw = math.cos(yaw)
+    sin_yaw = math.sin(yaw)
+
+    def to_world(offset: tuple[float, float, float]) -> list[float]:
+        x, y, z = offset
+        return [
+            float(base_pos[0].item()) + cos_yaw * x - sin_yaw * y,
+            float(base_pos[1].item()) + sin_yaw * x + cos_yaw * y,
+            float(base_pos[2].item()) + z,
+        ]
+
+    return to_world(eye_offset), to_world(target_offset)
+
+
+def set_camera_pose(camera: Camera, eye: list[float], target: list[float], device: str) -> None:
+    camera.set_world_poses_from_view(
+        torch.tensor([eye], dtype=torch.float32, device=device),
+        torch.tensor([target], dtype=torch.float32, device=device),
+    )
+
+
+def isometric_pose(scene_cfg: MountainCliffSceneCfg) -> tuple[list[float], list[float]]:
+    return [3.10, -3.30, scene_cfg.road_z + 1.80], [0.35, 1.15, scene_cfg.road_z - 0.10]
+
+
+def update_video_camera(camera: Camera, robot, scene_cfg: MountainCliffSceneCfg, view: str, dt: float) -> None:
+    if view == "robot":
+        eye, target = camera_pose_from_robot(robot, (0.18, 0.0, 0.18), (1.35, 0.0, 0.04))
+    elif view == "chase":
+        eye, target = camera_pose_from_robot(robot, (-1.65, -0.08, 0.72), (0.85, 0.02, 0.08))
+    elif view == "isometric":
+        eye, target = isometric_pose(scene_cfg)
+    else:
+        raise ValueError(f"Unknown video view: {view}")
+    set_camera_pose(camera, eye, target, robot.device)
+    camera.update(dt=dt)
+
+
+def update_video_cameras(video_cameras: dict[str, Camera] | None, robot, scene_cfg: MountainCliffSceneCfg, dt: float) -> None:
+    if not video_cameras:
+        return
+    for view, video_camera in video_cameras.items():
+        update_video_camera(video_camera, robot, scene_cfg, view, dt)
+
+
+def write_video_frames(
+    video_cameras: dict[str, Camera] | None,
+    video_writers: dict[str, cv2.VideoWriter] | None,
+    robot,
+    scene_cfg: MountainCliffSceneCfg,
+    dt: float,
+) -> None:
+    if not video_cameras or not video_writers:
+        return
+    update_video_cameras(video_cameras, robot, scene_cfg, dt)
+    for view, writer in video_writers.items():
+        writer.write(cv2.cvtColor(rgb_frame(video_cameras[view]), cv2.COLOR_RGB2BGR))
+
+
+def open_video_writers(task_name: str) -> dict[str, cv2.VideoWriter]:
+    if not args_cli.video_output_dir:
+        return {}
+    video_dir = Path(args_cli.video_output_dir)
+    video_dir.mkdir(parents=True, exist_ok=True)
+    writers: dict[str, cv2.VideoWriter] = {}
+    for view in VIDEO_VIEWS:
+        path = video_dir / f"mountain_cliff_teacher_{task_name}_{view}_1080p.mp4"
+        writer = cv2.VideoWriter(
+            str(path),
+            cv2.VideoWriter_fourcc(*"mp4v"),
+            float(args_cli.video_fps),
+            (args_cli.video_width, args_cli.video_height),
+        )
+        if not writer.isOpened():
+            raise RuntimeError(f"Could not open video writer: {path}")
+        writers[view] = writer
+        print(f"[record-video] recording {task_name} {view} -> {path}", flush=True)
+    return writers
+
+
+def close_video_writers(video_writers: dict[str, cv2.VideoWriter], task_name: str) -> None:
+    if not video_writers:
+        return
+    video_dir = Path(args_cli.video_output_dir)
+    for view, writer in video_writers.items():
+        writer.release()
+        path = video_dir / f"mountain_cliff_teacher_{task_name}_{view}_1080p.mp4"
+        print(f"[record-video] saved {path}", flush=True)
 
 
 def build_segment(start_xy: tuple[float, float], goal_xy: tuple[float, float]) -> Segment:
@@ -330,7 +449,21 @@ def compute_command(pose: tuple[float, float, float], segment: Segment) -> tuple
     return (vx, 0.0, wz), yaw_error, dist
 
 
-def run_episode(sim, robot, camera, wheel_joint_ids, arm_joint_ids, viewport, view, scene_cfg, route, stop_flag, rng):
+def run_episode(
+    sim,
+    robot,
+    camera,
+    wheel_joint_ids,
+    arm_joint_ids,
+    viewport,
+    view,
+    scene_cfg,
+    route,
+    stop_flag,
+    rng,
+    video_cameras: dict[str, Camera] | None = None,
+    video_writers: dict[str, cv2.VideoWriter] | None = None,
+):
     root_z = scene_cfg.road_z + scene_cfg.start_height
     pose = (route.start_xy[0], route.start_xy[1], route.start_yaw)
     reset_robot_pose(robot, position=(pose[0], pose[1], root_z), yaw=pose[2])
@@ -340,6 +473,7 @@ def run_episode(sim, robot, camera, wheel_joint_ids, arm_joint_ids, viewport, vi
     substeps = max(1, int(round(control_dt / physics_dt)))
     for _ in range(max(1, args_cli.settle_steps + args_cli.camera_warmup_steps)):
         ok, pose = step_n(sim, robot, camera, wheel_joint_ids, arm_joint_ids, pose, (0.0, 0.0, 0.0), 1, physics_dt, viewport, view, root_z)
+        update_video_cameras(video_cameras, robot, scene_cfg, physics_dt)
         if not ok:
             raise RuntimeError("Simulation closed during warmup.")
 
@@ -404,6 +538,7 @@ def run_episode(sim, robot, camera, wheel_joint_ids, arm_joint_ids, viewport, vi
         previous_action = action
         errors.append(error)
         ok, pose = step_n(sim, robot, camera, wheel_joint_ids, arm_joint_ids, pose, command, substeps, physics_dt, viewport, view, root_z)
+        write_video_frames(video_cameras, video_writers, robot, scene_cfg, control_dt)
         if not ok:
             terminal_reason = "app_closed"
             break
@@ -433,9 +568,11 @@ def main() -> None:
     robot = spawn_turbopi(asset_usd=args_cli.asset_usd, add_rollers=not args_cli.no_rollers)
     set_robot_camera_mount(CAMERA_POS, CAMERA_ROT)
     camera = build_camera(args_cli.image_width, args_cli.image_height)
+    video_cameras = build_video_cameras(args_cli.video_width, args_cli.video_height) if args_cli.video_output_dir else None
     sim.reset()
     update_policy_camera(camera, robot)
     camera.update(dt=0.0)
+    update_video_cameras(video_cameras, robot, scene_cfg, 0.0)
     sim.play()
     wheel_joint_ids = get_wheel_joint_ids(robot)
     arm_joint_ids = get_arm_joint_ids(robot)
@@ -470,7 +607,25 @@ def main() -> None:
         while saved < args_cli.num_episodes and simulation_app.is_running() and not stop_flag.requested:
             attempts += 1
             task_name = TASKS[saved % len(TASKS)] if args_cli.task == "mix" else args_cli.task
-            result = run_episode(sim, robot, camera, wheel_joint_ids, arm_joint_ids, viewport, view, scene_cfg, routes[task_name], stop_flag, rng)
+            video_writers = open_video_writers(task_name)
+            try:
+                result = run_episode(
+                    sim,
+                    robot,
+                    camera,
+                    wheel_joint_ids,
+                    arm_joint_ids,
+                    viewport,
+                    view,
+                    scene_cfg,
+                    routes[task_name],
+                    stop_flag,
+                    rng,
+                    video_cameras,
+                    video_writers,
+                )
+            finally:
+                close_video_writers(video_writers, task_name)
             if result.success and result.frames:
                 episode_dir = writer.save_episode(saved, result)
                 print(f"[record] saved episode_{saved:05d} {task_name} frames={len(result.frames)} -> {episode_dir}", flush=True)
