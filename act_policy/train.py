@@ -17,7 +17,7 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 from . import DEFAULT_ACT_DATA_ROOT, DEFAULT_ACTION_CHUNK_SIZE, DEFAULT_IMAGE_HEIGHT, DEFAULT_IMAGE_WIDTH
-from .dataset import build_datasets
+from .dataset import build_cached_datasets, build_datasets, has_cached_datasets
 from .model import ACTCVAEConfig, build_model, save_checkpoint
 
 
@@ -35,6 +35,13 @@ def resolve_run_dir(base_dir: Path) -> Path:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train TurboPi mountain ACT + language + CVAE policy")
     parser.add_argument("--episodes-dir", default=DEFAULT_ACT_DATA_ROOT)
+    parser.add_argument("--cache-dir", default=None, help="Optional predecoded tensor cache directory with train.pt/val.pt.")
+    parser.add_argument(
+        "--cache-mode",
+        choices=("auto", "require", "off"),
+        default="auto",
+        help="Use cached tensors when available. `require` fails if the cache is missing.",
+    )
     parser.add_argument("--run-dir", default="runs/mountain_act_cvae")
     parser.add_argument("--epochs", type=int, default=40)
     parser.add_argument("--batch-size", type=int, default=64)
@@ -139,14 +146,25 @@ def main() -> None:
     checkpoint_dir = run_dir / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    train_ds, val_ds, task_names = build_datasets(
-        args.episodes_dir,
-        image_size=(DEFAULT_IMAGE_WIDTH, DEFAULT_IMAGE_HEIGHT),
-        chunk_size=DEFAULT_ACTION_CHUNK_SIZE,
-        val_ratio=args.val_ratio,
-        seed=args.seed,
-        augment=not args.no_augment,
-    )
+    use_cache = False
+    if args.cache_dir and args.cache_mode != "off":
+        use_cache = has_cached_datasets(args.cache_dir)
+        if args.cache_mode == "require" and not use_cache:
+            raise RuntimeError(f"Required ACT tensor cache is missing or incomplete: {args.cache_dir}")
+    if use_cache:
+        train_ds, val_ds, task_names = build_cached_datasets(args.cache_dir, augment=not args.no_augment)
+        dataset_source = str(args.cache_dir)
+        print(f"[train] Using cached tensor dataset: {args.cache_dir}")
+    else:
+        train_ds, val_ds, task_names = build_datasets(
+            args.episodes_dir,
+            image_size=(DEFAULT_IMAGE_WIDTH, DEFAULT_IMAGE_HEIGHT),
+            chunk_size=DEFAULT_ACTION_CHUNK_SIZE,
+            val_ratio=args.val_ratio,
+            seed=args.seed,
+            augment=not args.no_augment,
+        )
+        dataset_source = str(args.episodes_dir)
     if len(train_ds) == 0:
         raise RuntimeError(f"No ACT episodes found under {args.episodes_dir}")
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
@@ -201,7 +219,7 @@ def main() -> None:
                 **{f"val_{key}": float(value) for key, value in val_metrics.items()},
             }
             history.append(metrics)
-            extra = {"task_names": task_names, "dataset_root": str(args.episodes_dir), "run_dir": str(run_dir)}
+            extra = {"task_names": task_names, "dataset_root": dataset_source, "run_dir": str(run_dir)}
             save_checkpoint(checkpoint_dir / "last.pt", model, epoch=epoch, metrics=metrics, extra=extra)
             if is_best:
                 save_checkpoint(checkpoint_dir / "best.pt", model, epoch=epoch, metrics=metrics, extra=extra)
@@ -210,6 +228,8 @@ def main() -> None:
                     {
                         "device": str(device),
                         "task_names": task_names,
+                        "dataset_root": dataset_source,
+                        "cache_dir": str(args.cache_dir) if use_cache else None,
                         "model_config": asdict(config),
                         "parameter_count": model.parameter_count(),
                         "history": history,

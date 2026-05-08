@@ -665,6 +665,53 @@ The checkpoint used for the corrected inference render is:
 runs/figure8_act_cvae_diverse/run_20260508_083827/checkpoints/best.pt
 ```
 
+### Fast Training Cache
+
+The slow part of training was repeatedly decoding `video.mp4` files during every epoch. The fast path predecodes the dataset once into tensor shards:
+
+```bash
+cd /workspace/turbopi_isaac
+/workspace/isaaclab/_isaac_sim/python.sh scripts/build_act_tensor_cache.py \
+  --episodes-dir /workspace/turbopi_isaac/data/act_figure8_diverse_128 \
+  --cache-dir /workspace/turbopi_isaac/data/act_figure8_diverse_128_cache \
+  --overwrite
+```
+
+Cache output:
+
+```text
+/workspace/turbopi_isaac/data/act_figure8_diverse_128_cache/train.pt
+/workspace/turbopi_isaac/data/act_figure8_diverse_128_cache/val.pt
+/workspace/turbopi_isaac/data/act_figure8_diverse_128_cache/metadata.json
+```
+
+The local cache size is about `2.3 GB`. It is not committed to Git because `data/` is intentionally ignored.
+
+The fast training command is:
+
+```bash
+cd /workspace/turbopi_isaac
+/workspace/isaaclab/_isaac_sim/python.sh train_turbopi_mountain_act.py \
+  --episodes-dir /workspace/turbopi_isaac/data/act_figure8_diverse_128 \
+  --cache-dir /workspace/turbopi_isaac/data/act_figure8_diverse_128_cache \
+  --cache-mode require \
+  --run-dir runs/figure8_act_cvae_fast \
+  --epochs 10 \
+  --batch-size 256 \
+  --num-workers 0 \
+  --device cuda \
+  --no-progress \
+  --no-augment
+```
+
+A smoke test of the cached training path completed `3` epochs in `44` seconds including Python startup and checkpoint writes:
+
+```text
+runs/figure8_act_cvae_fast_smoke/run_20260508_094455
+```
+
+For lecture, use the cache and train for `5-10` epochs to show the loss decreasing quickly. For best final policy quality, run the longer 40-epoch training offline.
+
 ## Inference Video Rendering
 
 The inference script is:
@@ -788,6 +835,57 @@ fps: 30.00
 duration: 10.03 s
 ```
 
+### Fast Lecture-Safe Render
+
+For lecture videos where reliability matters more than proving pure closed-loop ACT control, use:
+
+```text
+--controller route_follower
+```
+
+This keeps dynamic physics enabled but uses the language intent to select the route and a deterministic low-level route follower to keep the car on the track. The ACT policy path remains available with:
+
+```text
+--controller policy
+```
+
+Fast lecture-safe left-intent render command:
+
+```bash
+cd /workspace/turbopi_isaac
+TERM=xterm /workspace/isaaclab/isaaclab.sh -p /workspace/turbopi_isaac/scripts/drive_turbopi_mountain_act.py \
+  --headless \
+  --checkpoint /workspace/turbopi_isaac/runs/figure8_act_cvae_diverse/run_20260508_083827/checkpoints/best.pt \
+  --task go_left \
+  --controller route_follower \
+  --view chase \
+  --duration 10 \
+  --control_mode dynamic \
+  --route_target_speed 0.18 \
+  --vx_cap 0.22 \
+  --wz_cap 1.25 \
+  --video_output_dir /workspace/turbopi_isaac/inference_videos/figure8_fast_demo_480 \
+  --video_width 854 \
+  --video_height 480 \
+  --video_fps 30 \
+  --video_views chase
+```
+
+Output:
+
+```text
+/workspace/turbopi_isaac/inference_videos/figure8_fast_demo_480/mountain_act_inference_go_left_chase_854x480.mp4
+```
+
+Verified metadata:
+
+```text
+resolution: 854x480
+frames: 301
+fps: 30.00
+duration: 10.03 s
+```
+
 ## Update Log
 
 - Added the `figure8` alternate map while preserving `original`.
@@ -802,6 +900,7 @@ duration: 10.03 s
 - Added pose columns to the vectorized collector and collected a 128-episode diverse expert dataset with pose-based top-down audit plots.
 - Versioned the diverse expert audit plots and summary CSV under `docs/experiment_artifacts/figure8_diverse_experts/` for later slides.
 - Trained ACT + CVAE + language intent on the 128-episode diverse dataset and rendered a corrected 480p left-intent dynamic-physics video.
+- Added a predecoded tensor cache for fast ACT training and a lecture-safe route-follower render mode.
 
 ## Next Sections To Add
 

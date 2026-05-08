@@ -243,6 +243,64 @@ class ACTEpisodeDataset(Dataset):
         }
 
 
+class CachedACTDataset(Dataset):
+    """ACT dataset backed by predecoded tensors instead of MP4/parquet files."""
+
+    def __init__(self, cache_path: Path | str, *, augment: bool = False):
+        self.cache_path = Path(cache_path)
+        payload = torch.load(self.cache_path, map_location="cpu", weights_only=False)
+        self.images = payload["images"].contiguous()
+        self.action_chunks = payload["action_chunks"].contiguous()
+        self.task_indices = payload["task_indices"].long().contiguous()
+        self.task_names = list(payload["task_names"])
+        self.augment = augment
+        if self.images.ndim != 4:
+            raise ValueError(f"Expected cached images as NHWC uint8, got shape {tuple(self.images.shape)}")
+        if self.action_chunks.ndim != 3:
+            raise ValueError(f"Expected cached action chunks as NLC, got shape {tuple(self.action_chunks.shape)}")
+        if len(self.images) != len(self.action_chunks) or len(self.images) != len(self.task_indices):
+            raise ValueError(f"Cached tensor length mismatch in {self.cache_path}")
+
+    def __len__(self) -> int:
+        return int(self.images.shape[0])
+
+    def __getitem__(self, index: int) -> dict[str, torch.Tensor | str]:
+        image = self.images[index].permute(2, 0, 1).float().div(255.0)
+        if self.augment:
+            image = TF.adjust_brightness(image, random.uniform(0.92, 1.08))
+            image = TF.adjust_contrast(image, random.uniform(0.92, 1.08))
+            image = TF.adjust_saturation(image, random.uniform(0.92, 1.08))
+        task_index = self.task_indices[index]
+        return {
+            "image": image,
+            "action_chunk": self.action_chunks[index].float(),
+            "task_index": task_index,
+            "task": self.task_names[int(task_index.item())],
+            "session_name": self.cache_path.stem,
+        }
+
+
+def cached_dataset_paths(cache_dir: Path | str) -> tuple[Path, Path, Path]:
+    root = Path(cache_dir)
+    return root / "train.pt", root / "val.pt", root / "metadata.json"
+
+
+def has_cached_datasets(cache_dir: Path | str) -> bool:
+    train_path, val_path, metadata_path = cached_dataset_paths(cache_dir)
+    return train_path.exists() and val_path.exists() and metadata_path.exists()
+
+
+def build_cached_datasets(cache_dir: Path | str, *, augment: bool = True) -> tuple[CachedACTDataset, CachedACTDataset, list[str]]:
+    train_path, val_path, metadata_path = cached_dataset_paths(cache_dir)
+    metadata = _read_json(metadata_path)
+    task_names = [str(task) for task in metadata.get("task_names", [])]
+    train_ds = CachedACTDataset(train_path, augment=augment)
+    val_ds = CachedACTDataset(val_path, augment=False)
+    if not task_names:
+        task_names = list(train_ds.task_names)
+    return train_ds, val_ds, task_names
+
+
 def build_datasets(
     episodes_dir: Path | str,
     *,

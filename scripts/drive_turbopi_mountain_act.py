@@ -24,6 +24,12 @@ parser.add_argument("--duration", type=float, default=30.0)
 parser.add_argument("--physics_dt", type=float, default=1.0 / 120.0)
 parser.add_argument("--control_hz", type=float, default=10.0)
 parser.add_argument("--control_mode", choices=("dynamic", "kinematic"), default="dynamic")
+parser.add_argument(
+    "--controller",
+    choices=("policy", "route_follower"),
+    default="policy",
+    help="Use the ACT policy or a deterministic route follower for reliable lecture/demo renders.",
+)
 parser.add_argument("--policy_device", default="auto")
 parser.add_argument("--vx_cap", type=float, default=0.45)
 parser.add_argument("--vy_cap", type=float, default=0.35)
@@ -31,6 +37,12 @@ parser.add_argument("--wz_cap", type=float, default=2.0)
 parser.add_argument("--smoothing", type=float, default=0.35)
 parser.add_argument("--settle_steps", type=int, default=24)
 parser.add_argument("--camera_warmup_steps", type=int, default=12)
+parser.add_argument("--route_target_speed", type=float, default=0.20)
+parser.add_argument("--route_min_speed", type=float, default=0.05)
+parser.add_argument("--route_lookahead", type=float, default=0.18)
+parser.add_argument("--route_switch_distance", type=float, default=0.10)
+parser.add_argument("--route_heading_gain", type=float, default=2.0)
+parser.add_argument("--route_lookahead_gain", type=float, default=0.8)
 parser.add_argument("--no_rollers", action="store_true")
 parser.add_argument("--save_video", type=str, default=None)
 parser.add_argument("--video_fps", type=float, default=30.0)
@@ -80,7 +92,7 @@ from common import (
     twist_to_wheel_targets,
     update_chase_camera,
 )
-from mountain_cliff_scene import MountainCliffSceneCfg, design_mountain_cliff_scene, start_pose
+from mountain_cliff_scene import MountainCliffSceneCfg, design_mountain_cliff_scene, route_waypoints, start_pose
 
 CAMERA_POS = (0.140, 0.0, 0.115)
 CAMERA_ROT = (0.987688, 0.0, -0.156434, 0.0)
@@ -332,6 +344,40 @@ def apply_dynamic(robot, wheel_joint_ids, arm_joint_ids, command):
     robot.write_data_to_sim()
 
 
+def compute_route_command(pose: tuple[float, float, float], route: tuple[tuple[float, float], ...], segment_index: int) -> tuple[np.ndarray, int]:
+    x, y, yaw = pose
+    segment_index = min(segment_index, len(route) - 2)
+    start = np.asarray(route[segment_index], dtype=np.float32)
+    goal = np.asarray(route[segment_index + 1], dtype=np.float32)
+    pos = np.asarray([x, y], dtype=np.float32)
+    seg = goal - start
+    length = float(np.linalg.norm(seg))
+    if length <= 1e-6:
+        return np.zeros(4, dtype=np.float32), segment_index
+    dist_to_goal = float(np.linalg.norm(goal - pos))
+    if dist_to_goal <= args_cli.route_switch_distance and segment_index < len(route) - 2:
+        segment_index += 1
+        start = np.asarray(route[segment_index], dtype=np.float32)
+        goal = np.asarray(route[segment_index + 1], dtype=np.float32)
+        seg = goal - start
+        length = float(np.linalg.norm(seg))
+    t = float(np.clip(np.dot(pos - start, seg) / max(length * length, 1e-9), 0.0, 1.0))
+    lookahead_t = min(1.0, t + args_cli.route_lookahead / max(length, 1e-6))
+    target = start + lookahead_t * seg
+    delta = target - pos
+    target_bx = np.cos(yaw) * delta[0] + np.sin(yaw) * delta[1]
+    target_by = -np.sin(yaw) * delta[0] + np.cos(yaw) * delta[1]
+    point_error = float(np.arctan2(target_by, max(float(target_bx), 0.04)))
+    heading = float(np.arctan2(seg[1], seg[0]))
+    yaw_error = wrap_to_pi(heading - yaw)
+    speed_scale = float(np.clip(1.0 - abs(yaw_error) / 1.25, 0.20, 1.0))
+    vx = max(args_cli.route_min_speed, args_cli.route_target_speed * speed_scale)
+    if abs(yaw_error) > 1.15:
+        vx = 0.0
+    wz = float(np.clip(args_cli.route_heading_gain * yaw_error + args_cli.route_lookahead_gain * point_error, -args_cli.wz_cap, args_cli.wz_cap))
+    return np.asarray([vx, 0.0, wz, 0.0], dtype=np.float32), segment_index
+
+
 def main() -> None:
     runtime = ACTPolicyRuntime(
         args_cli.checkpoint,
@@ -372,6 +418,8 @@ def main() -> None:
         viewport.set_active_camera(POLICY_CAMERA_PATH)
         active_view = "robot"
     pose = (float(start_position[0]), float(start_position[1]), float(start_yaw))
+    route = route_waypoints(scene_cfg, args_cli.task)
+    segment_index = 0
     for _ in range(max(1, args_cli.settle_steps + args_cli.camera_warmup_steps)):
         sim.step()
         robot.update(physics_dt)
@@ -393,7 +441,10 @@ def main() -> None:
     try:
         while simulation_app.is_running() and not stop_flag.requested:
             frame = rgb_frame(camera)
-            _raw, command = runtime.predict(frame)
+            if args_cli.controller == "route_follower":
+                command, segment_index = compute_route_command(pose, route, segment_index)
+            else:
+                _raw, command = runtime.predict(frame)
             if writer is not None:
                 writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
             for substep_index in range(substeps):
