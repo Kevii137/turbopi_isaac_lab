@@ -64,6 +64,8 @@ from isaaclab.utils.math import euler_xyz_from_quat, quat_from_euler_xyz
 
 from act_policy.runtime import ACTPolicyRuntime, ACTRuntimeConfig
 from common import (
+    CAMERA_LINK_TO_SENSOR_POS,
+    CAMERA_LINK_TO_SENSOR_ROT,
     PERSPECTIVE_CAMERA_PATH,
     ROBOT_CAMERA_PATH,
     activate_view_mode,
@@ -125,6 +127,24 @@ def build_camera(
                 focus_distance=400.0,
                 horizontal_aperture=20.955,
                 clipping_range=(0.03, 100.0),
+            ),
+        )
+    )
+
+
+def build_policy_camera(width: int, height: int) -> Camera:
+    return Camera(
+        CameraCfg(
+            prim_path=ROBOT_CAMERA_PATH,
+            update_period=0.0,
+            height=height,
+            width=width,
+            data_types=["rgb"],
+            spawn=None,
+            offset=CameraCfg.OffsetCfg(
+                pos=tuple(CAMERA_LINK_TO_SENSOR_POS),
+                rot=tuple(CAMERA_LINK_TO_SENSOR_ROT),
+                convention="opengl",
             ),
         )
     )
@@ -255,8 +275,11 @@ def write_video_frames(
     if not video_cameras or not video_writers:
         return
     update_video_cameras(video_cameras, robot, scene_cfg, dt)
+    frame_repeats = max(1, int(round(float(args_cli.video_fps) / max(float(args_cli.control_hz), 1e-6))))
     for view, writer in video_writers.items():
-        writer.write(cv2.cvtColor(rgb_frame(video_cameras[view]), cv2.COLOR_RGB2BGR))
+        frame = cv2.cvtColor(rgb_frame(video_cameras[view]), cv2.COLOR_RGB2BGR)
+        for _ in range(frame_repeats):
+            writer.write(frame)
 
 
 def close_video_writers(video_writers: dict[str, cv2.VideoWriter]) -> None:
@@ -326,8 +349,8 @@ def main() -> None:
     sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=physics_dt, render_interval=render_interval, device=args_cli.device))
     design_mountain_cliff_scene(scene_cfg)
     robot = spawn_turbopi(asset_usd=args_cli.asset_usd, add_rollers=not args_cli.no_rollers)
-    set_robot_camera_mount(CAMERA_POS, CAMERA_ROT)
-    camera = build_camera(runtime.image_width, runtime.image_height)
+    set_robot_camera_mount(CAMERA_LINK_TO_SENSOR_POS, CAMERA_LINK_TO_SENSOR_ROT)
+    camera = build_policy_camera(runtime.image_width, runtime.image_height)
     video_views = parse_video_views(args_cli.video_views)
     video_cameras = build_video_cameras(args_cli.video_width, args_cli.video_height, video_views) if args_cli.video_output_dir else None
     sim.reset()
@@ -348,7 +371,6 @@ def main() -> None:
         active_view = "robot"
     pose = (float(start_position[0]), float(start_position[1]), float(start_yaw))
     for _ in range(max(1, args_cli.settle_steps + args_cli.camera_warmup_steps)):
-        update_policy_camera(camera, robot)
         sim.step()
         robot.update(physics_dt)
         camera.update(dt=physics_dt)
@@ -383,7 +405,6 @@ def main() -> None:
                     update_chase_camera(robot, viewport)
                 if args_cli.control_mode == "dynamic":
                     pose = get_pose(robot)
-            update_policy_camera(camera, robot)
             camera.update(dt=control_dt)
             write_video_frames(video_cameras, video_writers, robot, scene_cfg, control_dt)
             elapsed += control_dt

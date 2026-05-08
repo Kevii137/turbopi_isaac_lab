@@ -628,6 +628,43 @@ The `val_loss` is `nan` only because there was no validation split for this one-
 runs/figure8_act_cvae/run_20260508_070640/checkpoints/best.pt
 ```
 
+### Diverse Dataset Training Result
+
+The retraining run on the pose-audited diverse dataset is:
+
+```text
+runs/figure8_act_cvae_diverse/run_20260508_083827
+```
+
+Training command:
+
+```bash
+cd /workspace/turbopi_isaac
+/workspace/isaaclab/_isaac_sim/python.sh train_turbopi_mountain_act.py \
+  --episodes-dir /workspace/turbopi_isaac/data/act_figure8_diverse_128 \
+  --run-dir runs/figure8_act_cvae_diverse \
+  --epochs 40 \
+  --batch-size 128 \
+  --num-workers 0 \
+  --device cuda \
+  --no-progress
+```
+
+This run used the two collected sessions as a real session-level train/validation split. It completed all `40` epochs:
+
+```text
+best_epoch = 28
+best_val_loss = 0.01954263515460319
+epoch_040_train_loss = 0.0159
+epoch_040_val_loss = 0.0197
+```
+
+The checkpoint used for the corrected inference render is:
+
+```text
+runs/figure8_act_cvae_diverse/run_20260508_083827/checkpoints/best.pt
+```
+
 ## Inference Video Rendering
 
 The inference script is:
@@ -708,6 +745,49 @@ duration: 30.00 s
 
 `--video_fps 10` is deliberate because the inference loop writes one frame per `10 Hz` control step. Using `10 fps` makes the MP4 duration match the 30 seconds of simulated driving. If the control loop is later changed to write frames at render rate, this value should be revisited.
 
+### Corrected 480p Left-Intent Render
+
+After the diverse-dataset retraining, the inference script was corrected to use the same mounted robot camera geometry as the training collector. The previous inference path used a manually positioned policy camera, which created a camera-domain mismatch.
+
+The video writer now repeats rendered frames when `--video_fps` is higher than `--control_hz`, so a `10 Hz` policy rollout can still produce a normal-duration `30 fps` MP4.
+
+The corrected left-intent render command is:
+
+```bash
+cd /workspace/turbopi_isaac
+TERM=xterm /workspace/isaaclab/isaaclab.sh -p /workspace/turbopi_isaac/scripts/drive_turbopi_mountain_act.py \
+  --headless \
+  --checkpoint /workspace/turbopi_isaac/runs/figure8_act_cvae_diverse/run_20260508_083827/checkpoints/best.pt \
+  --task go_left \
+  --view chase \
+  --duration 10 \
+  --control_mode dynamic \
+  --vx_cap 0.22 \
+  --vy_cap 0.12 \
+  --wz_cap 1.25 \
+  --smoothing 0.25 \
+  --video_output_dir /workspace/turbopi_isaac/inference_videos/figure8_act_cvae_diverse_480 \
+  --video_width 854 \
+  --video_height 480 \
+  --video_fps 30 \
+  --video_views chase
+```
+
+The rendered video is:
+
+```text
+/workspace/turbopi_isaac/inference_videos/figure8_act_cvae_diverse_480/mountain_act_inference_go_left_chase_854x480.mp4
+```
+
+Verified metadata:
+
+```text
+resolution: 854x480
+frames: 303
+fps: 30.00
+duration: 10.10 s
+```
+
 ## Update Log
 
 - Added the `figure8` alternate map while preserving `original`.
@@ -721,6 +801,7 @@ duration: 30.00 s
 - Rendered 30-second 1920x1080 chase-camera inference videos for `go_left` and `go_right`.
 - Added pose columns to the vectorized collector and collected a 128-episode diverse expert dataset with pose-based top-down audit plots.
 - Versioned the diverse expert audit plots and summary CSV under `docs/experiment_artifacts/figure8_diverse_experts/` for later slides.
+- Trained ACT + CVAE + language intent on the 128-episode diverse dataset and rendered a corrected 480p left-intent dynamic-physics video.
 
 ## Next Sections To Add
 
