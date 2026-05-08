@@ -60,6 +60,8 @@ parser.add_argument("--camera_warmup_steps", type=int, default=6)
 parser.add_argument("--speed_jitter", type=float, default=0.15)
 parser.add_argument("--start_xy_jitter", type=float, default=0.025)
 parser.add_argument("--start_yaw_jitter", type=float, default=0.08)
+parser.add_argument("--lateral_offset_jitter", type=float, default=0.11, help="Maximum expert centerline offset in meters.")
+parser.add_argument("--lateral_wave_jitter", type=float, default=0.035, help="Maximum sinusoidal offset variation in meters.")
 parser.add_argument("--action_noise_std", type=float, default=0.0)
 parser.add_argument("--seed", type=int, default=0)
 AppLauncher.add_app_launcher_args(parser)
@@ -111,6 +113,9 @@ class EnvState:
     last_progress_time: float = 0.0
     elapsed_steps: int = 0
     target_speed: float = 0.42
+    lateral_offset: float = 0.0
+    lateral_wave_amp: float = 0.0
+    lateral_wave_phase: float = 0.0
     frames: list[ACTEpisodeFrame] = field(default_factory=list)
     errors: list[float] = field(default_factory=list)
     prev_action: np.ndarray = field(default_factory=lambda: np.zeros(4, dtype=np.float32))
@@ -302,13 +307,25 @@ def reset_envs(
         xy_jitter = float(args_cli.start_xy_jitter)
         yaw_jitter = float(args_cli.start_yaw_jitter)
         speed_jitter = float(args_cli.speed_jitter)
+        lateral_offset_jitter = float(args_cli.lateral_offset_jitter)
+        lateral_wave_jitter = float(args_cli.lateral_wave_jitter)
         x = start[0] + float(rng.uniform(-xy_jitter, xy_jitter))
         y = start[1] + float(rng.uniform(-xy_jitter, xy_jitter))
         yaw = ((yaw + float(rng.uniform(-yaw_jitter, yaw_jitter)) + math.pi) % (2.0 * math.pi)) - math.pi
         speed_scale = 1.0 + float(rng.uniform(-speed_jitter, speed_jitter))
         target_speed = max(args_cli.min_forward_speed, min(float(MAX_COMMAND[0]), args_cli.target_speed * speed_scale))
+        lateral_offset = float(rng.uniform(-lateral_offset_jitter, lateral_offset_jitter))
+        lateral_wave_amp = float(rng.uniform(-lateral_wave_jitter, lateral_wave_jitter))
+        lateral_wave_phase = float(rng.uniform(0.0, 2.0 * math.pi))
 
-        states[env_idx] = EnvState(task_name=task_name, task_index=task_index, target_speed=target_speed)
+        states[env_idx] = EnvState(
+            task_name=task_name,
+            task_index=task_index,
+            target_speed=target_speed,
+            lateral_offset=lateral_offset,
+            lateral_wave_amp=lateral_wave_amp,
+            lateral_wave_phase=lateral_wave_phase,
+        )
         root_state[local_i, 0] = x
         root_state[local_i, 1] = y
         root_state[local_i, 2] = ROAD_Z + START_HEIGHT
@@ -364,8 +381,21 @@ def compute_commands(
     device = local_pos.device
     task_ids = torch.tensor([state.task_index for state in states], dtype=torch.long, device=device)
     seg_ids = torch.tensor([state.segment_index for state in states], dtype=torch.long, device=device)
+    seg = goals - starts
     lookahead_t = torch.clamp(t + args_cli.lookahead_distance / torch.clamp(lengths[task_ids, seg_ids], min=1e-6), 0.0, 1.0)
-    target = starts + lookahead_t.unsqueeze(-1) * (goals - starts)
+    target = starts + lookahead_t.unsqueeze(-1) * seg
+    progress_phase = progress_ratio * (2.0 * math.pi * max(1, int(args_cli.laps)))
+    lateral_offset = torch.tensor(
+        [
+            state.lateral_offset + state.lateral_wave_amp * math.sin(float(progress_phase[idx].item()) + state.lateral_wave_phase)
+            for idx, state in enumerate(states)
+        ],
+        dtype=torch.float32,
+        device=device,
+    )
+    normal = torch.stack((-seg[:, 1], seg[:, 0]), dim=-1) / torch.clamp(lengths[task_ids, seg_ids].unsqueeze(-1), min=1e-6)
+    offset_scale = torch.sin(math.pi * lookahead_t).clamp(min=0.0, max=1.0)
+    target = target + (lateral_offset * offset_scale).unsqueeze(-1) * normal
     delta = target - local_pos
     target_bx = torch.cos(yaw) * delta[:, 0] + torch.sin(yaw) * delta[:, 1]
     target_by = -torch.sin(yaw) * delta[:, 0] + torch.cos(yaw) * delta[:, 1]
@@ -555,6 +585,8 @@ def main() -> None:
                         command=command4.copy(),
                         track_error=float(error_np[env_idx]),
                         route_progress=float(progress_np[env_idx]),
+                        pose_xy=(float(local_pos[env_idx, 0].item()), float(local_pos[env_idx, 1].item())),
+                        pose_yaw=float(yaw[env_idx].item()),
                     )
                 )
                 state.prev_action = action4

@@ -37,6 +37,8 @@ class ACTEpisodeFrame:
     command: np.ndarray
     track_error: float
     route_progress: float
+    pose_xy: tuple[float, float] | None = None
+    pose_yaw: float | None = None
 
 
 @dataclass(frozen=True)
@@ -180,6 +182,9 @@ class ACTMountainSessionWriter:
                     "command": np.asarray(frame.command, dtype=np.float32).tolist(),
                     "track_error": float(frame.track_error),
                     "route_progress": float(frame.route_progress),
+                    "pose_x": float(frame.pose_xy[0]) if frame.pose_xy is not None else np.nan,
+                    "pose_y": float(frame.pose_xy[1]) if frame.pose_xy is not None else np.nan,
+                    "pose_yaw": float(frame.pose_yaw) if frame.pose_yaw is not None else np.nan,
                     "task": result.task_name,
                     "task_index": int(result.task_index),
                     "instruction": result.instruction,

@@ -363,6 +363,92 @@ episode_00001/
 
 The RGB frames are stored in `video.mp4`.
 
+## Diverse Expert Dataset Audit
+
+Before retraining, a new diverse expert dataset was collected and audited:
+
+```text
+dataset root: /workspace/turbopi_isaac/data/act_figure8_diverse_128
+train session: figure8_diverse_train_64
+validation session: figure8_diverse_val_64
+accepted episodes: 128
+left intent episodes: 64
+right intent episodes: 64
+laps per episode: 3
+control rate: 10 Hz
+camera source: robot_forward
+stored camera resolution: 96x72
+```
+
+The collector now stores the actual expert pose at every saved frame:
+
+```text
+pose_x
+pose_y
+pose_yaw
+```
+
+These columns are for auditing and plotting. The ACT trainer still reads the same training fields as before:
+
+```text
+video.mp4
+data.parquet["action"]
+data.parquet["task"]
+data.parquet["task_index"]
+```
+
+The new diversity sources are:
+
+- Per-episode target-speed jitter.
+- Start position jitter.
+- Start yaw jitter.
+- Bounded lateral expert offset within the road.
+- Gentle sinusoidal lateral variation within the road.
+- Small action noise.
+
+The collector rejects attempts whose centerline error exceeds the safety gate:
+
+```text
+--off_track_abort_distance 0.22
+```
+
+Rejected attempts are not written as training episodes. In the collected dataset:
+
+```text
+train session: 64 accepted, 19 rejected
+validation session: 64 accepted, 6 rejected
+```
+
+The final accepted dataset audit is:
+
+```text
+go_left:
+  episodes: 64
+  frames: 24,156
+  mean duration: 37.7437 s
+  mean track error: 0.0384 m
+  max track error: 0.1555 m
+  minimum final progress: 1.0000
+
+go_right:
+  episodes: 64
+  frames: 24,021
+  mean duration: 37.5328 s
+  mean track error: 0.0379 m
+  max track error: 0.1806 m
+  minimum final progress: 1.0000
+```
+
+The pose-based audit plots are:
+
+```text
+/workspace/turbopi_isaac/outputs/figure8_diverse_expert_path_audit/figure8_expert_paths_overlay.png
+/workspace/turbopi_isaac/outputs/figure8_diverse_expert_path_audit/figure8_expert_paths_on_topdown_map.png
+/workspace/turbopi_isaac/outputs/figure8_diverse_expert_path_audit/figure8_expert_paths_summary.csv
+```
+
+Important note: an earlier command-integration plot from the old dataset did not line up with the route because it reconstructed pose by integrating only the saved frame commands. Segment-transition control steps were applied in simulation but were not saved as frames, so command-only reconstruction was not a reliable pose audit. The new diverse dataset writes actual pose columns and the final audit plots use those saved poses directly.
+
 ## ACT + CVAE + Language Intent Training
 
 The training script is:
@@ -623,6 +709,7 @@ duration: 30.00 s
 - Added `scripts/record_turbopi_figure8_act_vec.py` and collected a 64-episode vectorized dataset with 32 left and 32 right episodes.
 - Completed ACT + CVAE + language-intent training on the 64-episode vectorized figure-8 dataset.
 - Rendered 30-second 1920x1080 chase-camera inference videos for `go_left` and `go_right`.
+- Added pose columns to the vectorized collector and collected a 128-episode diverse expert dataset with pose-based top-down audit plots.
 
 ## Next Sections To Add
 
