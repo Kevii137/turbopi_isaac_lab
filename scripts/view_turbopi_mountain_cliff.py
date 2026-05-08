@@ -19,6 +19,7 @@ parser.add_argument(
     help="Initial viewport mode.",
 )
 parser.add_argument("--duration", type=float, default=0.0, help="Run duration in seconds. 0 runs until closed.")
+parser.add_argument("--map", choices=("original", "figure8"), default="figure8", help="Road map to load.")
 parser.add_argument("--road_width", type=float, default=0.48, help="Drivable mountain-road width in meters.")
 parser.add_argument("--road_z", type=float, default=0.82, help="Road height above the valley floor.")
 parser.add_argument("--lower_terrain_z", type=float, default=-0.42, help="Lower valley height.")
@@ -165,6 +166,7 @@ def main() -> None:
     sim = sim_utils.SimulationContext(sim_cfg)
 
     scene_cfg = MountainCliffSceneCfg(
+        map_name=args_cli.map,
         road_width=args_cli.road_width,
         road_z=args_cli.road_z,
         lower_terrain_z=args_cli.lower_terrain_z,
@@ -196,6 +198,7 @@ def main() -> None:
     print(f"[INFO] TurboPi USD  : {resolve_asset_usd(args_cli.asset_usd)}")
     print(f"[INFO] TurboPi URDF : {TURBOPI_URDF}")
     print("[INFO] Scene        : procedural mountain cliff road")
+    print(f"[INFO] Map          : {scene_cfg.map_name}")
     print(f"[INFO] Road width   : {scene_cfg.road_width:.2f} m")
     print(f"[INFO] Road height  : {scene_cfg.road_z:.2f} m")
     print(f"[INFO] Initial view : {active_view}")

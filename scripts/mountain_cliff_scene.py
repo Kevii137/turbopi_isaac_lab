@@ -19,6 +19,7 @@ SKY_TEXTURE_PATH = Path(__file__).resolve().parents[1] / "assets" / "generated" 
 class MountainCliffSceneCfg:
     """Configuration for a narrow mountain shelf road with a cliff drop."""
 
+    map_name: str = "figure8"
     road_width: float = 0.48
     road_thickness: float = 0.055
     road_z: float = 0.82
@@ -30,7 +31,7 @@ class MountainCliffSceneCfg:
     start_offset: float = 0.32
 
 
-ROAD_CENTERLINE: tuple[tuple[float, float], ...] = (
+ORIGINAL_ROAD_CENTERLINE: tuple[tuple[float, float], ...] = (
     (-1.70, -1.18),
     (-1.14, -0.92),
     (-0.65, -0.54),
@@ -45,7 +46,7 @@ ROAD_CENTERLINE: tuple[tuple[float, float], ...] = (
     (-0.34, 3.70),
 )
 
-RIGHT_BRANCH_CENTERLINE: tuple[tuple[float, float], ...] = (
+ORIGINAL_RIGHT_BRANCH_CENTERLINE: tuple[tuple[float, float], ...] = (
     (1.42, 1.10),
     (2.10, 1.20),
     (2.72, 0.92),
@@ -53,6 +54,102 @@ RIGHT_BRANCH_CENTERLINE: tuple[tuple[float, float], ...] = (
     (3.66, -0.16),
     (3.86, -0.88),
 )
+
+FIGURE8_COMMON_ARM_CENTERLINE: tuple[tuple[float, float], ...] = (
+    (0.00, -1.45),
+    (0.00, -0.68),
+    (0.00, 0.10),
+    (0.00, 0.88),
+)
+
+FIGURE8_LEFT_LOOP_CENTERLINE: tuple[tuple[float, float], ...] = (
+    (0.00, 0.88),
+    (-0.91, 0.72),
+    (-1.58, 0.30),
+    (-1.82, -0.28),
+    (-1.58, -0.87),
+    (-0.91, -1.29),
+    (0.00, -1.45),
+)
+
+FIGURE8_RIGHT_LOOP_CENTERLINE: tuple[tuple[float, float], ...] = (
+    (0.00, 0.88),
+    (0.91, 0.72),
+    (1.58, 0.30),
+    (1.82, -0.28),
+    (1.58, -0.87),
+    (0.91, -1.29),
+    (0.00, -1.45),
+)
+
+FIGURE8_LEFT_VISUAL_CENTERLINE: tuple[tuple[float, float], ...] = (
+    *FIGURE8_COMMON_ARM_CENTERLINE,
+    *FIGURE8_LEFT_LOOP_CENTERLINE[1:],
+)
+
+FIGURE8_RIGHT_VISUAL_CENTERLINE: tuple[tuple[float, float], ...] = (
+    *FIGURE8_RIGHT_LOOP_CENTERLINE,
+)
+
+FIGURE8_ROAD_CENTERLINE: tuple[tuple[float, float], ...] = (
+    *FIGURE8_COMMON_ARM_CENTERLINE,
+    *FIGURE8_LEFT_LOOP_CENTERLINE[1:],
+)
+
+FIGURE8_RIGHT_BRANCH_CENTERLINE: tuple[tuple[float, float], ...] = (
+    *FIGURE8_COMMON_ARM_CENTERLINE,
+    *FIGURE8_RIGHT_LOOP_CENTERLINE[1:],
+)
+
+
+ROAD_CENTERLINE = ORIGINAL_ROAD_CENTERLINE
+RIGHT_BRANCH_CENTERLINE = ORIGINAL_RIGHT_BRANCH_CENTERLINE
+VALID_MAP_NAMES = ("original", "figure8")
+
+
+@dataclass(frozen=True)
+class RoadMap:
+    road_centerline: tuple[tuple[float, float], ...]
+    right_branch_centerline: tuple[tuple[float, float], ...]
+    left_visual_centerline: tuple[tuple[float, float], ...]
+    right_visual_centerline: tuple[tuple[float, float], ...]
+    common_arm_centerline: tuple[tuple[float, float], ...]
+
+
+def _normalize_map_name(map_name: str) -> str:
+    if map_name not in VALID_MAP_NAMES:
+        raise ValueError(f"Unknown map {map_name!r}. Expected one of: {', '.join(VALID_MAP_NAMES)}")
+    return map_name
+
+
+def road_map(scene_cfg: MountainCliffSceneCfg) -> RoadMap:
+    if _normalize_map_name(scene_cfg.map_name) == "figure8":
+        return RoadMap(
+            road_centerline=FIGURE8_ROAD_CENTERLINE,
+            right_branch_centerline=FIGURE8_RIGHT_BRANCH_CENTERLINE,
+            left_visual_centerline=FIGURE8_LEFT_VISUAL_CENTERLINE,
+            right_visual_centerline=FIGURE8_RIGHT_VISUAL_CENTERLINE,
+            common_arm_centerline=FIGURE8_COMMON_ARM_CENTERLINE,
+        )
+    return RoadMap(
+        road_centerline=ORIGINAL_ROAD_CENTERLINE,
+        right_branch_centerline=ORIGINAL_RIGHT_BRANCH_CENTERLINE,
+        left_visual_centerline=ORIGINAL_ROAD_CENTERLINE,
+        right_visual_centerline=ORIGINAL_RIGHT_BRANCH_CENTERLINE,
+        common_arm_centerline=ORIGINAL_ROAD_CENTERLINE[:7],
+    )
+
+
+def route_waypoints(scene_cfg: MountainCliffSceneCfg, task_name: str) -> tuple[tuple[float, float], ...]:
+    paths = road_map(scene_cfg)
+    if scene_cfg.map_name == "figure8":
+        return paths.road_centerline if task_name == "go_left" else paths.right_branch_centerline
+
+    start_position, _ = start_pose(scene_cfg)
+    start_xy = (float(start_position[0]), float(start_position[1]))
+    if task_name == "go_left":
+        return (start_xy, *paths.road_centerline[1:])
+    return (start_xy, *paths.road_centerline[1:7], *paths.right_branch_centerline[1:])
 
 
 def _preview(color: tuple[float, float, float], roughness: float = 0.85) -> sim_utils.PreviewSurfaceCfg:
@@ -268,6 +365,7 @@ def _spawn_boulder_cluster(
 
 
 def _spawn_road(scene_cfg: MountainCliffSceneCfg) -> None:
+    paths = road_map(scene_cfg)
     road_color = (0.18, 0.13, 0.085)
     dust_color = (0.32, 0.24, 0.16)
     edge_color = (0.39, 0.34, 0.27)
@@ -276,7 +374,7 @@ def _spawn_road(scene_cfg: MountainCliffSceneCfg) -> None:
     surface_z = scene_cfg.road_z + 0.008
     mark_z = scene_cfg.road_z + 0.015
 
-    for idx, (start, end) in enumerate(zip(ROAD_CENTERLINE[:-1], ROAD_CENTERLINE[1:], strict=False)):
+    for idx, (start, end) in enumerate(zip(paths.left_visual_centerline[:-1], paths.left_visual_centerline[1:], strict=False)):
         cx, cy, ux, uy, yaw = _segment_geometry(start, end)
         length = math.dist(start, end)
         total_width = scene_cfg.road_width + 2.0 * scene_cfg.shoulder_width
@@ -333,7 +431,7 @@ def _spawn_road(scene_cfg: MountainCliffSceneCfg) -> None:
                 yaw=yaw + 0.35 * ((dash_idx % 3) - 1),
             )
 
-    for idx, point in enumerate(ROAD_CENTERLINE[1:-1], start=1):
+    for idx, point in enumerate(paths.left_visual_centerline[1:-1], start=1):
         _cylinder(
             f"/World/MountainCliffRoad/CurvePatch{idx:02d}",
             radius=0.5 * (scene_cfg.road_width + 2.0 * scene_cfg.shoulder_width),
@@ -355,7 +453,8 @@ def _spawn_road(scene_cfg: MountainCliffSceneCfg) -> None:
 
 
 def _spawn_right_branch(scene_cfg: MountainCliffSceneCfg) -> None:
-    """Spawn a short visible right-hand road option ahead of the start view."""
+    """Spawn the right-hand loop from the shared arm junction."""
+    paths = road_map(scene_cfg)
     road_color = (0.18, 0.13, 0.085)
     dust_color = (0.31, 0.23, 0.15)
     edge_color = (0.38, 0.33, 0.26)
@@ -363,7 +462,7 @@ def _spawn_right_branch(scene_cfg: MountainCliffSceneCfg) -> None:
     surface_z = scene_cfg.road_z + 0.008
     mark_z = scene_cfg.road_z + 0.015
 
-    for idx, (start, end) in enumerate(zip(RIGHT_BRANCH_CENTERLINE[:-1], RIGHT_BRANCH_CENTERLINE[1:], strict=False)):
+    for idx, (start, end) in enumerate(zip(paths.right_visual_centerline[:-1], paths.right_visual_centerline[1:], strict=False)):
         cx, cy, ux, uy, yaw = _segment_geometry(start, end)
         length = math.dist(start, end)
         total_width = scene_cfg.road_width + 2.0 * scene_cfg.shoulder_width
@@ -407,7 +506,7 @@ def _spawn_right_branch(scene_cfg: MountainCliffSceneCfg) -> None:
                     roughness=0.96,
                     yaw=yaw,
                 )
-    for idx, point in enumerate(RIGHT_BRANCH_CENTERLINE[:-1]):
+    for idx, point in enumerate(paths.right_visual_centerline[:-1]):
         _cylinder(
             f"/World/MountainCliffRoad/RightBranchCurvePatch{idx:02d}",
             radius=0.5 * (scene_cfg.road_width + 2.0 * scene_cfg.shoulder_width),
@@ -429,9 +528,19 @@ def _spawn_right_branch(scene_cfg: MountainCliffSceneCfg) -> None:
 
 
 def _spawn_guard_rails(scene_cfg: MountainCliffSceneCfg) -> None:
+    """Legacy shelf-road rails are disabled for the figure-8 track.
+
+    The old one-sided rail followed ROAD_CENTERLINE directly. On the closed
+    loop geometry, that side alternates between outer and inner edges, which
+    can place posts across the drivable path at bends.
+    """
+    if scene_cfg.map_name == "figure8":
+        return
+
+    paths = road_map(scene_cfg)
     post_color = (0.36, 0.28, 0.20)
     rail_color = (0.47, 0.45, 0.40)
-    for idx, (start, end) in enumerate(zip(ROAD_CENTERLINE[:-1], ROAD_CENTERLINE[1:], strict=False)):
+    for idx, (start, end) in enumerate(zip(paths.road_centerline[:-1], paths.road_centerline[1:], strict=False)):
         cx, cy, ux, uy, yaw = _segment_geometry(start, end)
         length = math.dist(start, end)
         # Put rails on the valley side of the shelf road, with gaps at turns.
@@ -484,13 +593,17 @@ def _spawn_guard_rails(scene_cfg: MountainCliffSceneCfg) -> None:
 
 
 def _spawn_right_side_barricades(scene_cfg: MountainCliffSceneCfg) -> None:
-    """Add physical low barricades on the open right edge and branch road."""
+    """Guard rails are disabled so the figure-8 remains fully drivable."""
+    if scene_cfg.map_name == "figure8":
+        return
+
+    paths = road_map(scene_cfg)
     post_color = (0.34, 0.29, 0.22)
     rail_color = (0.60, 0.56, 0.48)
     barrier_specs = (
-        ("ApproachRight", ROAD_CENTERLINE[:6], -1.0, 0.5 * scene_cfg.road_width + scene_cfg.shoulder_width + 0.030),
-        ("MainRight", ROAD_CENTERLINE[7:], -1.0, 0.5 * scene_cfg.road_width + scene_cfg.shoulder_width + 0.030),
-        ("BranchRight", RIGHT_BRANCH_CENTERLINE[2:], 1.0, 0.5 * scene_cfg.road_width + scene_cfg.shoulder_width + 0.025),
+        ("ApproachRight", paths.road_centerline[:6], -1.0, 0.5 * scene_cfg.road_width + scene_cfg.shoulder_width + 0.030),
+        ("MainRight", paths.road_centerline[7:], -1.0, 0.5 * scene_cfg.road_width + scene_cfg.shoulder_width + 0.030),
+        ("BranchRight", paths.right_branch_centerline[2:], 1.0, 0.5 * scene_cfg.road_width + scene_cfg.shoulder_width + 0.025),
     )
     for name, centerline, side_sign, offset in barrier_specs:
         for idx, (start, end) in enumerate(zip(centerline[:-1], centerline[1:], strict=False)):
@@ -526,10 +639,14 @@ def _spawn_right_side_barricades(scene_cfg: MountainCliffSceneCfg) -> None:
 
 
 def _spawn_road_end_caps(scene_cfg: MountainCliffSceneCfg) -> None:
-    """Mark the end of each fork without extending the road branches."""
+    """No end caps: both fork choices are closed loops back to the shared start."""
+    if scene_cfg.map_name == "figure8":
+        return
+
+    paths = road_map(scene_cfg)
     cap_color = (0.55, 0.51, 0.43)
     post_color = (0.34, 0.29, 0.22)
-    for name, centerline in (("LeftFork", ROAD_CENTERLINE), ("RightFork", RIGHT_BRANCH_CENTERLINE)):
+    for name, centerline in (("LeftFork", paths.road_centerline), ("RightFork", paths.right_branch_centerline)):
         prev_point = centerline[-2]
         end_point = centerline[-1]
         _, _, _, _, yaw = _segment_geometry(prev_point, end_point)
@@ -562,6 +679,8 @@ def _spawn_road_end_caps(scene_cfg: MountainCliffSceneCfg) -> None:
 
 
 def _spawn_terrain(scene_cfg: MountainCliffSceneCfg) -> None:
+    paths = road_map(scene_cfg)
+
     def valley_height(x: float, y: float) -> float:
         ripple = 0.055 * math.sin(2.7 * x + 0.4) + 0.045 * math.cos(2.2 * y - 0.6)
         slope = -0.055 * x + 0.025 * y
@@ -732,7 +851,7 @@ def _spawn_terrain(scene_cfg: MountainCliffSceneCfg) -> None:
     _cuboid(
         "/World/MountainCliffRoad/StartShelf",
         size=(1.10, 0.82, 0.10),
-        translation=(-1.62, -1.22, scene_cfg.road_z - 0.085),
+        translation=(paths.road_centerline[0][0], paths.road_centerline[0][1], scene_cfg.road_z - 0.085),
         color=(0.29, 0.24, 0.19),
         collision=True,
         roughness=0.98,
@@ -872,11 +991,15 @@ def design_mountain_cliff_scene(scene_cfg: MountainCliffSceneCfg) -> None:
 
 
 def start_pose(scene_cfg: MountainCliffSceneCfg | None = None) -> tuple[tuple[float, float, float], float]:
-    """Start at the lower road entrance, facing along the first mountain-road segment."""
+    """Start at the lower end of the shared straight segment, facing the decision point."""
     cfg = scene_cfg or MountainCliffSceneCfg()
-    start = ROAD_CENTERLINE[0]
-    next_point = ROAD_CENTERLINE[1]
+    paths = road_map(cfg)
+    start = paths.road_centerline[0]
+    next_point = paths.road_centerline[1]
     yaw = math.atan2(next_point[1] - start[1], next_point[0] - start[0])
+    if cfg.map_name == "figure8":
+        return (start[0], start[1], cfg.road_z + cfg.start_height), yaw
+
     dx = next_point[0] - start[0]
     dy = next_point[1] - start[1]
     segment_length = max(1e-6, math.hypot(dx, dy))

@@ -30,6 +30,7 @@ parser.add_argument("--session_name", type=str, default=None)
 parser.add_argument("--dataset_name", type=str, default="turbopi_mountain_act_cvae")
 parser.add_argument("--num_episodes", type=int, default=10)
 parser.add_argument("--task", choices=("go_left", "go_right", "mix"), default="mix")
+parser.add_argument("--map", choices=("original", "figure8"), default="figure8", help="Road map to collect on.")
 parser.add_argument("--physics_dt", type=float, default=1.0 / 30.0)
 parser.add_argument("--control_hz", type=float, default=10.0)
 parser.add_argument("--image_width", type=int, default=128)
@@ -96,10 +97,9 @@ from common import (
     update_chase_camera,
 )
 from mountain_cliff_scene import (
-    RIGHT_BRANCH_CENTERLINE,
-    ROAD_CENTERLINE,
     MountainCliffSceneCfg,
     design_mountain_cliff_scene,
+    route_waypoints,
     start_pose,
 )
 
@@ -312,12 +312,10 @@ def build_segment(start_xy: tuple[float, float], goal_xy: tuple[float, float]) -
 
 
 def build_route(scene_cfg: MountainCliffSceneCfg, task_name: str) -> Route:
-    start_position, start_yaw = start_pose(scene_cfg)
-    start_xy = (float(start_position[0]), float(start_position[1]))
-    if task_name == "go_left":
-        waypoints = (start_xy, *ROAD_CENTERLINE[1:])
-    else:
-        waypoints = (start_xy, *ROAD_CENTERLINE[1:7], *RIGHT_BRANCH_CENTERLINE[1:])
+    waypoints = route_waypoints(scene_cfg, task_name)
+    start_xy = waypoints[0]
+    first_goal = waypoints[1]
+    start_yaw = math.atan2(first_goal[1] - start_xy[1], first_goal[0] - start_xy[0])
     segments = tuple(build_segment(waypoints[i], waypoints[i + 1]) for i in range(len(waypoints) - 1))
     return Route(
         task_name=task_name,
@@ -557,7 +555,7 @@ def run_episode(
 
 
 def main() -> None:
-    scene_cfg = MountainCliffSceneCfg()
+    scene_cfg = MountainCliffSceneCfg(map_name=args_cli.map)
     routes = {task: build_route(scene_cfg, task) for task in TASKS}
     physics_dt = max(float(args_cli.physics_dt), 1.0 / 60.0)
     control_dt = 1.0 / max(args_cli.control_hz, 1e-6)
