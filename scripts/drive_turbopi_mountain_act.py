@@ -275,11 +275,9 @@ def write_video_frames(
     if not video_cameras or not video_writers:
         return
     update_video_cameras(video_cameras, robot, scene_cfg, dt)
-    frame_repeats = max(1, int(round(float(args_cli.video_fps) / max(float(args_cli.control_hz), 1e-6))))
     for view, writer in video_writers.items():
         frame = cv2.cvtColor(rgb_frame(video_cameras[view]), cv2.COLOR_RGB2BGR)
-        for _ in range(frame_repeats):
-            writer.write(frame)
+        writer.write(frame)
 
 
 def close_video_writers(video_writers: dict[str, cv2.VideoWriter]) -> None:
@@ -344,8 +342,12 @@ def main() -> None:
     scene_cfg = MountainCliffSceneCfg()
     physics_dt = float(args_cli.physics_dt)
     control_dt = 1.0 / max(args_cli.control_hz, 1e-6)
+    video_dt = 1.0 / max(args_cli.video_fps, 1e-6)
     substeps = max(1, int(round(control_dt / physics_dt)))
-    render_interval = substeps if args_cli.headless and not bool(getattr(args_cli, "livestream", 0)) else 1
+    video_substeps = max(1, int(round(video_dt / physics_dt)))
+    render_interval = video_substeps if args_cli.video_output_dir else substeps
+    if not args_cli.headless or bool(getattr(args_cli, "livestream", 0)):
+        render_interval = 1
     sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=physics_dt, render_interval=render_interval, device=args_cli.device))
     design_mountain_cliff_scene(scene_cfg)
     robot = spawn_turbopi(asset_usd=args_cli.asset_usd, add_rollers=not args_cli.no_rollers)
@@ -387,13 +389,14 @@ def main() -> None:
     signal.signal(signal.SIGTERM, stop_flag.request)
     print(f"[drive] checkpoint={args_cli.checkpoint} task={args_cli.task} params={runtime.model.parameter_count():,}")
     elapsed = 0.0
+    next_video_time = 0.0
     try:
         while simulation_app.is_running() and not stop_flag.requested:
             frame = rgb_frame(camera)
             _raw, command = runtime.predict(frame)
             if writer is not None:
                 writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
-            for _ in range(substeps):
+            for substep_index in range(substeps):
                 if args_cli.control_mode == "kinematic":
                     pose = integrate(pose, command, physics_dt)
                     write_kinematic(robot, wheel_joint_ids, arm_joint_ids, pose, command, root_z)
@@ -405,8 +408,15 @@ def main() -> None:
                     update_chase_camera(robot, viewport)
                 if args_cli.control_mode == "dynamic":
                     pose = get_pose(robot)
+                sim_time = elapsed + (substep_index + 1) * physics_dt
+                if (
+                    video_writers
+                    and sim_time + 0.5 * physics_dt >= next_video_time
+                    and (args_cli.duration <= 0 or next_video_time <= args_cli.duration + 1e-9)
+                ):
+                    write_video_frames(video_cameras, video_writers, robot, scene_cfg, physics_dt)
+                    next_video_time += video_dt
             camera.update(dt=control_dt)
-            write_video_frames(video_cameras, video_writers, robot, scene_cfg, control_dt)
             elapsed += control_dt
             if args_cli.duration > 0 and elapsed >= args_cli.duration:
                 break

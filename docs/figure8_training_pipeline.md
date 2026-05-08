@@ -749,7 +749,7 @@ duration: 30.00 s
 
 After the diverse-dataset retraining, the inference script was corrected to use the same mounted robot camera geometry as the training collector. The previous inference path used a manually positioned policy camera, which created a camera-domain mismatch.
 
-The video writer now repeats rendered frames when `--video_fps` is higher than `--control_hz`, so a `10 Hz` policy rollout can still produce a normal-duration `30 fps` MP4.
+The video writer captures frames inside the physics loop at the requested video cadence. This means the policy can still update at `10 Hz`, while the chase camera records true intermediate render frames at `30 fps`.
 
 The corrected left-intent render command is:
 
@@ -783,9 +783,9 @@ Verified metadata:
 
 ```text
 resolution: 854x480
-frames: 303
+frames: 301
 fps: 30.00
-duration: 10.10 s
+duration: 10.03 s
 ```
 
 ## Update Log
