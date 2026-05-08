@@ -67,6 +67,8 @@ class ACTMountainSessionWriter:
         tasks: tuple[str, ...],
         task_instructions: dict[str, str],
         record_camera: str = "robot",
+        map_name: str = "unknown",
+        laps: int = 1,
     ):
         self.output_root = Path(output_root)
         self.session_name = session_name
@@ -79,6 +81,8 @@ class ACTMountainSessionWriter:
         self.tasks = tuple(tasks)
         self.task_instructions = dict(task_instructions)
         self.record_camera = record_camera
+        self.map_name = map_name
+        self.laps = int(laps)
         self.parquet_engine = resolve_parquet_engine()
         self.session_dir = self.output_root / self.session_name
         self.session_dir.mkdir(parents=True, exist_ok=True)
@@ -134,7 +138,8 @@ class ACTMountainSessionWriter:
             "intent_mode": "language",
             "conditioning": "task_id",
             "task_type": "instruction_conditioned_mountain_fork_following",
-            "track_layout": "mountain_cliff_fork",
+            "track_layout": self.map_name,
+            "laps_per_episode": self.laps,
             "collection_style": "autonomous_teacher",
             "image_width": self.image_width,
             "image_height": self.image_height,
@@ -190,7 +195,8 @@ class ACTMountainSessionWriter:
             "intent_mode": "language",
             "conditioning": "task_id",
             "task_type": "instruction_conditioned_mountain_fork_following",
-            "track_layout": "mountain_cliff_fork",
+            "track_layout": self.map_name,
+            "laps_per_episode": self.laps,
             "task_name": result.task_name,
             "task_index": int(result.task_index),
             "instruction": result.instruction,

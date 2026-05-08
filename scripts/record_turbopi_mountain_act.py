@@ -31,6 +31,7 @@ parser.add_argument("--dataset_name", type=str, default="turbopi_mountain_act_cv
 parser.add_argument("--num_episodes", type=int, default=10)
 parser.add_argument("--task", choices=("go_left", "go_right", "mix"), default="mix")
 parser.add_argument("--map", choices=("original", "figure8"), default="figure8", help="Road map to collect on.")
+parser.add_argument("--laps", type=int, default=3, help="Number of left/right loops to include in one episode.")
 parser.add_argument("--physics_dt", type=float, default=1.0 / 30.0)
 parser.add_argument("--control_hz", type=float, default=10.0)
 parser.add_argument("--image_width", type=int, default=128)
@@ -50,11 +51,15 @@ parser.add_argument("--turn_in_place_angle", type=float, default=1.15)
 parser.add_argument("--off_track_abort_distance", type=float, default=0.32)
 parser.add_argument("--stuck_timeout", type=float, default=8.0)
 parser.add_argument("--progress_epsilon", type=float, default=0.025)
-parser.add_argument("--max_episode_time", type=float, default=40.0)
+parser.add_argument("--max_episode_time", type=float, default=120.0)
 parser.add_argument("--settle_steps", type=int, default=4)
 parser.add_argument("--camera_warmup_steps", type=int, default=8)
 parser.add_argument("--min_image_std", type=float, default=5.0)
 parser.add_argument("--action_noise_std", type=float, default=0.0)
+parser.add_argument("--speed_jitter", type=float, default=0.15, help="Per-episode fractional target-speed variation.")
+parser.add_argument("--start_xy_jitter", type=float, default=0.025, help="Per-episode start-position jitter in meters.")
+parser.add_argument("--start_yaw_jitter", type=float, default=0.08, help="Per-episode start-yaw jitter in radians.")
+parser.add_argument("--camera_xyz_jitter", type=float, default=0.015, help="Per-episode robot-camera eye/target jitter in meters.")
 parser.add_argument("--seed", type=int, default=0)
 parser.add_argument("--no_rollers", action="store_true")
 parser.add_argument("--video_output_dir", type=str, default=None, help="Optional directory for high-res teacher episode MP4s.")
@@ -131,6 +136,15 @@ class Route:
     start_yaw: float
 
 
+@dataclass(frozen=True)
+class EpisodeVariation:
+    target_speed: float
+    start_xy_offset: tuple[float, float]
+    start_yaw_offset: float
+    camera_eye_offset: tuple[float, float, float]
+    camera_target_offset: tuple[float, float, float]
+
+
 class StopFlag:
     requested = False
 
@@ -187,7 +201,34 @@ def build_video_cameras(width: int, height: int) -> dict[str, Camera]:
     }
 
 
-def update_policy_camera(camera: Camera, robot) -> None:
+def add_offsets(
+    base: tuple[float, ...],
+    offset: tuple[float, ...] | None,
+) -> tuple[float, ...]:
+    if offset is None:
+        return base
+    return tuple(float(value + delta) for value, delta in zip(base, offset, strict=True))
+
+
+def sample_episode_variation(rng: np.random.Generator) -> EpisodeVariation:
+    speed_scale = 1.0 + float(rng.uniform(-args_cli.speed_jitter, args_cli.speed_jitter))
+    target_speed = clamp(args_cli.target_speed * speed_scale, args_cli.min_forward_speed, float(MAX_COMMAND[0]))
+    xy_jitter = float(args_cli.start_xy_jitter)
+    yaw_jitter = float(args_cli.start_yaw_jitter)
+    camera_jitter = float(args_cli.camera_xyz_jitter)
+    return EpisodeVariation(
+        target_speed=target_speed,
+        start_xy_offset=(
+            float(rng.uniform(-xy_jitter, xy_jitter)),
+            float(rng.uniform(-xy_jitter, xy_jitter)),
+        ),
+        start_yaw_offset=float(rng.uniform(-yaw_jitter, yaw_jitter)),
+        camera_eye_offset=tuple(float(value) for value in rng.uniform(-camera_jitter, camera_jitter, size=3)),
+        camera_target_offset=tuple(float(value) for value in rng.uniform(-camera_jitter, camera_jitter, size=3)),
+    )
+
+
+def update_policy_camera(camera: Camera, robot, variation: EpisodeVariation | None = None) -> None:
     base_pos = robot.data.root_pos_w[0]
     _, _, yaw_t = euler_xyz_from_quat(robot.data.root_quat_w)
     yaw = float(yaw_t[0].item())
@@ -202,8 +243,10 @@ def update_policy_camera(camera: Camera, robot) -> None:
             float(base_pos[2].item()) + z,
         ]
 
-    eye = to_world((0.18, 0.0, 0.18))
-    target = to_world((1.35, 0.0, 0.04))
+    eye_offset = add_offsets((0.18, 0.0, 0.18), variation.camera_eye_offset if variation else None)
+    target_offset = add_offsets((1.35, 0.0, 0.04), variation.camera_target_offset if variation else None)
+    eye = to_world(eye_offset)
+    target = to_world(target_offset)
     camera.set_world_poses_from_view(
         torch.tensor([eye], dtype=torch.float32, device=robot.device),
         torch.tensor([target], dtype=torch.float32, device=robot.device),
@@ -311,8 +354,16 @@ def build_segment(start_xy: tuple[float, float], goal_xy: tuple[float, float]) -
     return Segment(start_xy=start_xy, goal_xy=goal_xy, length=length, yaw=math.atan2(dy, dx))
 
 
+def repeat_waypoints(waypoints: tuple[tuple[float, float], ...], laps: int) -> tuple[tuple[float, float], ...]:
+    laps = max(1, int(laps))
+    repeated = list(waypoints)
+    for _ in range(laps - 1):
+        repeated.extend(waypoints[1:])
+    return tuple(repeated)
+
+
 def build_route(scene_cfg: MountainCliffSceneCfg, task_name: str) -> Route:
-    waypoints = route_waypoints(scene_cfg, task_name)
+    waypoints = repeat_waypoints(route_waypoints(scene_cfg, task_name), args_cli.laps)
     start_xy = waypoints[0]
     first_goal = waypoints[1]
     start_yaw = math.atan2(first_goal[1] - start_xy[1], first_goal[0] - start_xy[0])
@@ -407,7 +458,21 @@ def write_kinematic(robot, wheel_joint_ids, arm_joint_ids, pose, command, root_z
     robot.write_data_to_sim()
 
 
-def step_n(sim, robot, camera, wheel_joint_ids, arm_joint_ids, pose, command, substeps, physics_dt, viewport, view, root_z):
+def step_n(
+    sim,
+    robot,
+    camera,
+    wheel_joint_ids,
+    arm_joint_ids,
+    pose,
+    command,
+    substeps,
+    physics_dt,
+    viewport,
+    view,
+    root_z,
+    variation: EpisodeVariation | None = None,
+):
     current = pose
     for _ in range(substeps):
         if not simulation_app.is_running():
@@ -420,12 +485,16 @@ def step_n(sim, robot, camera, wheel_joint_ids, arm_joint_ids, pose, command, su
         robot.update(physics_dt)
         if view == "chase":
             update_chase_camera(robot, viewport)
-    update_policy_camera(camera, robot)
+    update_policy_camera(camera, robot, variation)
     camera.update(dt=substeps * physics_dt)
     return True, current
 
 
-def compute_command(pose: tuple[float, float, float], segment: Segment) -> tuple[tuple[float, float, float], float, float]:
+def compute_command(
+    pose: tuple[float, float, float],
+    segment: Segment,
+    target_speed: float,
+) -> tuple[tuple[float, float, float], float, float]:
     x, y, yaw = pose
     dist = math.hypot(segment.goal_xy[0] - x, segment.goal_xy[1] - y)
     if dist <= args_cli.position_tolerance:
@@ -440,7 +509,7 @@ def compute_command(pose: tuple[float, float, float], segment: Segment) -> tuple
     yaw_error = wrap_to_pi(segment.yaw - yaw)
     approach = clamp(dist / max(args_cli.approach_distance, 1e-6), 0.35, 1.0)
     heading = clamp(1.0 - abs(yaw_error) / max(args_cli.heading_slowdown_angle, 1e-6), 0.10, 1.0)
-    vx = clamp(args_cli.target_speed * min(approach, heading), args_cli.min_forward_speed, args_cli.target_speed)
+    vx = clamp(target_speed * min(approach, heading), args_cli.min_forward_speed, target_speed)
     if abs(yaw_error) >= args_cli.turn_in_place_angle:
         vx = 0.0
     wz = clamp(args_cli.heading_gain * yaw_error + args_cli.lookahead_heading_gain * point_error, -args_cli.max_wz, args_cli.max_wz)
@@ -462,15 +531,34 @@ def run_episode(
     video_cameras: dict[str, Camera] | None = None,
     video_writers: dict[str, cv2.VideoWriter] | None = None,
 ):
+    variation = sample_episode_variation(rng)
     root_z = scene_cfg.road_z + scene_cfg.start_height
-    pose = (route.start_xy[0], route.start_xy[1], route.start_yaw)
+    pose = (
+        route.start_xy[0] + variation.start_xy_offset[0],
+        route.start_xy[1] + variation.start_xy_offset[1],
+        wrap_to_pi(route.start_yaw + variation.start_yaw_offset),
+    )
     reset_robot_pose(robot, position=(pose[0], pose[1], root_z), yaw=pose[2])
     write_kinematic(robot, wheel_joint_ids, arm_joint_ids, pose, (0.0, 0.0, 0.0), root_z)
     physics_dt = float(args_cli.physics_dt)
     control_dt = 1.0 / max(args_cli.control_hz, 1e-6)
     substeps = max(1, int(round(control_dt / physics_dt)))
     for _ in range(max(1, args_cli.settle_steps + args_cli.camera_warmup_steps)):
-        ok, pose = step_n(sim, robot, camera, wheel_joint_ids, arm_joint_ids, pose, (0.0, 0.0, 0.0), 1, physics_dt, viewport, view, root_z)
+        ok, pose = step_n(
+            sim,
+            robot,
+            camera,
+            wheel_joint_ids,
+            arm_joint_ids,
+            pose,
+            (0.0, 0.0, 0.0),
+            1,
+            physics_dt,
+            viewport,
+            view,
+            root_z,
+            variation,
+        )
         update_video_cameras(video_cameras, robot, scene_cfg, physics_dt)
         if not ok:
             raise RuntimeError("Simulation closed during warmup.")
@@ -493,7 +581,7 @@ def run_episode(
         progress_m = route_progress((pose[0], pose[1]), route, segment_index)
         progress_ratio = progress_m / max(route.length, 1e-6)
         error = distance_to_segment((pose[0], pose[1]), segment)
-        command, _yaw_error, dist = compute_command(pose, segment)
+        command, _yaw_error, dist = compute_command(pose, segment, variation.target_speed)
         is_final_segment = segment_index >= len(route.segments) - 1
         if is_final_segment and (dist <= args_cli.switch_distance or progress_ratio >= args_cli.finish_progress):
             terminal_reason = "goal_reached"
@@ -514,7 +602,7 @@ def run_episode(
         if args_cli.action_noise_std > 0.0:
             noise = rng.normal(0.0, args_cli.action_noise_std, size=3).astype(np.float32) * MAX_COMMAND[:3]
             command = (
-                clamp(command[0] + float(noise[0]), 0.0, args_cli.target_speed),
+                clamp(command[0] + float(noise[0]), 0.0, variation.target_speed),
                 clamp(command[1] + float(noise[1]), -0.18, 0.18),
                 clamp(command[2] + float(noise[2]), -args_cli.max_wz, args_cli.max_wz),
             )
@@ -535,7 +623,21 @@ def run_episode(
         )
         previous_action = action
         errors.append(error)
-        ok, pose = step_n(sim, robot, camera, wheel_joint_ids, arm_joint_ids, pose, command, substeps, physics_dt, viewport, view, root_z)
+        ok, pose = step_n(
+            sim,
+            robot,
+            camera,
+            wheel_joint_ids,
+            arm_joint_ids,
+            pose,
+            command,
+            substeps,
+            physics_dt,
+            viewport,
+            view,
+            root_z,
+            variation,
+        )
         write_video_frames(video_cameras, video_writers, robot, scene_cfg, control_dt)
         if not ok:
             terminal_reason = "app_closed"
@@ -592,6 +694,8 @@ def main() -> None:
         tasks=TASKS,
         task_instructions=TASK_INSTRUCTIONS,
         record_camera="robot_forward",
+        map_name=scene_cfg.map_name,
+        laps=args_cli.laps,
     )
     stop_flag = StopFlag()
     signal.signal(signal.SIGINT, stop_flag.request)
