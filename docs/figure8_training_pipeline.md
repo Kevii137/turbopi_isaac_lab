@@ -712,6 +712,88 @@ runs/figure8_act_cvae_fast_smoke/run_20260508_094455
 
 For lecture, use the cache and train for `5-10` epochs to show the loss decreasing quickly. For best final policy quality, run the longer 40-epoch training offline.
 
+### Timed 10-Epoch Demo Pipeline
+
+A full lecture-style timed pipeline was run with:
+
+1. cached tensor training for `10` epochs,
+2. one left-intent lecture-safe inference render.
+
+Training command:
+
+```bash
+cd /workspace/turbopi_isaac
+SECONDS=0
+/workspace/isaaclab/_isaac_sim/python.sh train_turbopi_mountain_act.py \
+  --episodes-dir /workspace/turbopi_isaac/data/act_figure8_diverse_128 \
+  --cache-dir /workspace/turbopi_isaac/data/act_figure8_diverse_128_cache \
+  --cache-mode require \
+  --run-dir runs/figure8_act_cvae_fast_demo10 \
+  --epochs 10 \
+  --batch-size 256 \
+  --num-workers 0 \
+  --device cuda \
+  --no-progress \
+  --no-augment
+echo demo_train_elapsed_seconds=$SECONDS
+```
+
+Measured result:
+
+```text
+run: runs/figure8_act_cvae_fast_demo10/run_20260508_112635
+epochs: 10
+best_epoch: 9
+best_val_loss: 0.062086038638348114
+final_train_loss: 0.0434
+final_val_loss: 0.0824
+wall_clock_time: 111 s
+```
+
+Inference command:
+
+```bash
+cd /workspace/turbopi_isaac
+SECONDS=0
+TERM=xterm /workspace/isaaclab/isaaclab.sh -p /workspace/turbopi_isaac/scripts/drive_turbopi_mountain_act.py \
+  --headless \
+  --checkpoint /workspace/turbopi_isaac/runs/figure8_act_cvae_fast_demo10/run_20260508_112635/checkpoints/best.pt \
+  --task go_left \
+  --controller route_follower \
+  --view chase \
+  --duration 20 \
+  --control_mode dynamic \
+  --route_target_speed 0.18 \
+  --vx_cap 0.22 \
+  --wz_cap 1.25 \
+  --video_output_dir /workspace/turbopi_isaac/inference_videos/figure8_fast_demo10_pipeline_480 \
+  --video_width 854 \
+  --video_height 480 \
+  --video_fps 30 \
+  --video_views chase
+echo demo_inference_elapsed_seconds=$SECONDS
+```
+
+Measured result:
+
+```text
+video: /workspace/turbopi_isaac/inference_videos/figure8_fast_demo10_pipeline_480/mountain_act_inference_go_left_chase_854x480.mp4
+resolution: 854x480
+frames: 601
+fps: 30.00
+duration: 20.03 s
+wall_clock_time: 184 s
+```
+
+Total timed demo pipeline:
+
+```text
+training: 111 s
+inference render: 184 s
+total excluding already-built cache: 295 s
+total excluding already-built cache: 4 min 55 s
+```
+
 ## Inference Video Rendering
 
 The inference script is:
@@ -901,6 +983,7 @@ duration: 10.03 s
 - Versioned the diverse expert audit plots and summary CSV under `docs/experiment_artifacts/figure8_diverse_experts/` for later slides.
 - Trained ACT + CVAE + language intent on the 128-episode diverse dataset and rendered a corrected 480p left-intent dynamic-physics video.
 - Added a predecoded tensor cache for fast ACT training and a lecture-safe route-follower render mode.
+- Timed the demo pipeline: 10 cached training epochs plus one 20-second 480p inference video took 295 seconds after cache creation.
 
 ## Next Sections To Add
 
