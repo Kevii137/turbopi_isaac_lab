@@ -18,7 +18,8 @@ if str(REPO_ROOT) not in sys.path:
 
 parser = argparse.ArgumentParser(description="Run a trained TurboPi ACT policy on the custom layout.")
 parser.add_argument("--checkpoint", type=str, required=True, help="Path to a trained act_policy checkpoint.")
-parser.add_argument("--task", choices=("go_left", "go_right"), default="go_left")
+# UPDATED: Task choices updated to reflect the 4 new topological routes
+parser.add_argument("--task", choices=("left_oval", "teardrop", "horseshoe", "small_circle"), default="left_oval")
 parser.add_argument("--asset_usd", type=str, default=None, help="Optional override for the TurboPi USD.")
 parser.add_argument(
     "--view",

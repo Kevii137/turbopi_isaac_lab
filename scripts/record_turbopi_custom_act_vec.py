@@ -1,4 +1,4 @@
-"""Vectorized ACT recording for the custom TurboPi layout."""
+"""Vectorized ACT recording for the custom TurboPi layout supporting 4 topological routes."""
 
 from __future__ import annotations
 
@@ -18,8 +18,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-TASKS = ("go_left", "go_right")
-TASK_INSTRUCTIONS = {"go_left": "go left", "go_right": "go right"}
+# UPDATED: Registered the 4 distinct layout loops and natural text commands
+TASKS = ("left_oval", "teardrop", "horseshoe", "small_circle")
+TASK_INSTRUCTIONS = {
+    "left_oval": "drive left oval loop",
+    "teardrop": "drive teardrop loop",
+    "horseshoe": "drive horseshoe loop",
+    "small_circle": "drive small circle extension",
+}
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "data" / "act_custom_vec"
 
 parser = argparse.ArgumentParser(description="Vectorized TurboPi custom ACT recorder.")
@@ -52,12 +58,6 @@ parser.add_argument("--progress_epsilon", type=float, default=0.025)
 parser.add_argument("--max_episode_time", type=float, default=90.0)
 parser.add_argument("--settle_steps", type=int, default=4)
 parser.add_argument("--camera_warmup_steps", type=int, default=6)
-parser.add_argument("--speed_jitter", type=float, default=0.15)
-parser.add_argument("--start_xy_jitter", type=float, default=0.025)
-parser.add_argument("--start_yaw_jitter", type=float, default=0.08)
-parser.add_argument("--lateral_offset_jitter", type=float, default=0.11, help="Maximum expert centerline offset in meters.")
-parser.add_argument("--lateral_wave_jitter", type=float, default=0.035, help="Maximum sinusoidal offset variation in meters.")
-parser.add_argument("--action_noise_std", type=float, default=0.0)
 parser.add_argument("--seed", type=int, default=0)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -94,16 +94,13 @@ MAX_COMMAND = np.array([0.45, 0.35, 2.0, 1.0], dtype=np.float32)
 
 @dataclass
 class EnvState:
-    task_name: str = "go_left"
+    task_name: str = "left_oval"
     task_index: int = 0
     segment_index: int = 0
     best_progress: float = 0.0
     last_progress_time: float = 0.0
     elapsed_steps: int = 0
     target_speed: float = 0.42
-    lateral_offset: float = 0.0
-    lateral_wave_amp: float = 0.0
-    lateral_wave_phase: float = 0.0
     frames: list[ACTEpisodeFrame] = field(default_factory=list)
     errors: list[float] = field(default_factory=list)
     prev_action: np.ndarray = field(default_factory=lambda: np.zeros(4, dtype=np.float32))
@@ -149,16 +146,30 @@ def repeated_waypoints(task_name: str) -> tuple[tuple[float, float], ...]:
     return tuple(points)
 
 
-LEFT_POINTS = repeated_waypoints("go_left")
-RIGHT_POINTS = repeated_waypoints("go_right")
+# FIXED: Evaluates all 4 topological routes separately
+OVAL_POINTS = repeated_waypoints("left_oval")
+TEARDROP_POINTS = repeated_waypoints("teardrop")
+HORSESHOE_POINTS = repeated_waypoints("horseshoe")
+SMALL_CIRCLE_POINTS = repeated_waypoints("small_circle")
+
+TASK_ROUTES_LIST = [OVAL_POINTS, TEARDROP_POINTS, HORSESHOE_POINTS, SMALL_CIRCLE_POINTS]
 
 
 def build_route_tensors(device: str) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    routes_np = np.asarray([LEFT_POINTS, RIGHT_POINTS], dtype=np.float32)
+    # FIXED: Pads ragged waypoint arrays with their final point to allow uniform matrix calculation
+    max_len = max(len(r) for r in TASK_ROUTES_LIST)
+    padded_routes = []
+    for r in TASK_ROUTES_LIST:
+        padded = list(r)
+        while len(padded) < max_len:
+            padded.append(r[-1])
+        padded_routes.append(padded)
+
+    routes_np = np.asarray(padded_routes, dtype=np.float32)
     segments = routes_np[:, 1:, :] - routes_np[:, :-1, :]
     lengths = np.linalg.norm(segments, axis=-1).astype(np.float32)
     headings = np.arctan2(segments[..., 1], segments[..., 0]).astype(np.float32)
-    cumulative = np.concatenate([np.zeros((2, 1), dtype=np.float32), np.cumsum(lengths, axis=1)], axis=1)
+    cumulative = np.concatenate([np.zeros((4, 1), dtype=np.float32), np.cumsum(lengths, axis=1)], axis=1)
     return (
         torch.tensor(routes_np, dtype=torch.float32, device=device),
         torch.tensor(lengths, dtype=torch.float32, device=device),
@@ -191,57 +202,35 @@ def build_scene_cfg_class(num_envs: int):
     attrs: dict[str, object] = {
         "num_envs": int(num_envs),
         "env_spacing": float(env_spacing),
-        "ground": AssetBaseCfg(
-            prim_path="/World/ground",
-            spawn=sim_utils.GroundPlaneCfg(),
-        ),
-        "dome_light": AssetBaseCfg(
-            prim_path="/World/Light",
-            spawn=sim_utils.DomeLightCfg(intensity=950.0, color=(0.95, 0.95, 0.94)),
-        ),
-        "floor": make_asset_cfg(
-            "{ENV_REGEX_NS}/Floor",
-            sim_utils.CuboidCfg(size=(4.8, 4.8, 0.006), collision_props=None, visual_material=floor_mat),
-            (0.0, 0.0, ROAD_Z - 0.026),
-        ),
-        "robot": build_turbopi_cfg(
-            asset_usd=args_cli.asset_usd,
-            prim_path="{ENV_REGEX_NS}/TurboPi",
-            add_rollers=False,
-        ),
+        "ground": AssetBaseCfg(prim_path="/World/ground", spawn=sim_utils.GroundPlaneCfg()),
+        "dome_light": AssetBaseCfg(prim_path="/World/Light", spawn=sim_utils.DomeLightCfg(intensity=950.0, color=(0.95, 0.95, 0.94))),
+        "floor": make_asset_cfg("{ENV_REGEX_NS}/Floor", sim_utils.CuboidCfg(size=(4.8, 4.8, 0.006), visual_material=floor_mat), (0.0, 0.0, ROAD_Z - 0.026)),
+        "robot": build_turbopi_cfg(asset_usd=args_cli.asset_usd, prim_path="{ENV_REGEX_NS}/TurboPi", add_rollers=False),
         "camera": CameraCfg(
             prim_path="{ENV_REGEX_NS}/TurboPi/camera_link/RobotCamera",
             update_period=0.0,
             height=args_cli.image_height,
             width=args_cli.image_width,
             data_types=["rgb"],
-            spawn=sim_utils.PinholeCameraCfg(
-                focal_length=8.5,
-                focus_distance=400.0,
-                horizontal_aperture=10.0,
-                vertical_aperture=7.5,
-                clipping_range=(0.01, 100.0),
-            ),
-            offset=CameraCfg.OffsetCfg(
-                pos=tuple(CAMERA_LINK_TO_SENSOR_POS),
-                rot=tuple(CAMERA_LINK_TO_SENSOR_ROT),
-                convention="opengl",
-            ),
+            spawn=sim_utils.PinholeCameraCfg(focal_length=8.5, focus_distance=400.0, horizontal_aperture=10.0, vertical_aperture=7.5, clipping_range=(0.01, 100.0)),
+            offset=CameraCfg.OffsetCfg(pos=tuple(CAMERA_LINK_TO_SENSOR_POS), rot=tuple(CAMERA_LINK_TO_SENSOR_ROT), convention="opengl"),
         ),
     }
 
-    for route_name, points in (("left", LEFT_POINTS), ("right", RIGHT_POINTS)):
+    # FIXED: Re-generates environmental simulation segments for all 4 tracks
+    for route_name, points in (("left_oval", OVAL_POINTS), ("teardrop", TEARDROP_POINTS), ("horseshoe", HORSESHOE_POINTS), ("small_circle", SMALL_CIRCLE_POINTS)):
+        clean_name = route_name.replace("_", "").capitalize()
         for idx, (start, end) in enumerate(zip(points[:-1], points[1:])):
             cx, cy, length, yaw = segment_geometry(start, end)
             attrs[f"{route_name}_deck_{idx:02d}"] = make_asset_cfg(
-                f"{{ENV_REGEX_NS}}/{route_name.capitalize()}RoadDeck{idx:02d}",
-                sim_utils.CuboidCfg(size=(total_width, length + 0.04, ROAD_THICKNESS), collision_props=None, visual_material=shoulder_mat),
+                f"{{ENV_REGEX_NS}}/{clean_name}RoadDeck{idx:02d}",
+                sim_utils.CuboidCfg(size=(total_width, length + 0.04, ROAD_THICKNESS), visual_material=shoulder_mat),
                 (cx, cy, ROAD_Z - 0.5 * ROAD_THICKNESS),
                 yaw,
             )
             attrs[f"{route_name}_surface_{idx:02d}"] = make_asset_cfg(
-                f"{{ENV_REGEX_NS}}/{route_name.capitalize()}RoadSurface{idx:02d}",
-                sim_utils.CuboidCfg(size=(ROAD_WIDTH, length + 0.055, 0.006), collision_props=None, visual_material=road_mat),
+                f"{{ENV_REGEX_NS}}/{clean_name}RoadSurface{idx:02d}",
+                sim_utils.CuboidCfg(size=(ROAD_WIDTH, length + 0.055, 0.006), visual_material=road_mat),
                 (cx, cy, ROAD_Z + 0.004),
                 yaw,
             )
@@ -250,22 +239,12 @@ def build_scene_cfg_class(num_envs: int):
     return _Cfg
 
 
-def build_session_name() -> str:
-    return args_cli.session_name or datetime.utcnow().strftime("session_custom_act_vec_%Y%m%d_%H%M%S")
-
-
 def sample_task(env_idx: int) -> tuple[str, int]:
-    value = env_idx % 2
+    value = env_idx % 4
     return TASKS[value], value
 
 
-def reset_envs(
-    scene: InteractiveScene,
-    states: list[EnvState],
-    env_ids: list[int],
-    rng: np.random.Generator,
-    next_episode_index: list[int],
-) -> None:
+def reset_envs(scene: InteractiveScene, states: list[EnvState], env_ids: list[int], rng: np.random.Generator, next_episode_index: list[int]) -> None:
     if not env_ids:
         return
     robot = scene["robot"]
@@ -275,38 +254,26 @@ def reset_envs(
     joint_pos = robot.data.default_joint_pos[env_ids_t].clone()
     joint_vel = robot.data.default_joint_vel[env_ids_t].clone()
     yaws = torch.zeros(len(env_ids), dtype=torch.float32, device=device)
+
     for local_i, env_idx in enumerate(env_ids):
         task_name, task_index = sample_task(env_idx)
-        route = LEFT_POINTS if task_name == "go_left" else RIGHT_POINTS
-        start = route[0]
-        first = route[1]
+        route = TASK_ROUTES_LIST[task_index]
+        start, first = route[0], route[1]
+        
         yaw = math.atan2(first[1] - start[1], first[0] - start[0])
-        xy_jitter = float(args_cli.start_xy_jitter)
-        yaw_jitter = float(args_cli.start_yaw_jitter)
-        speed_jitter = float(args_cli.speed_jitter)
-        lateral_offset_jitter = float(args_cli.lateral_offset_jitter)
-        lateral_wave_jitter = float(args_cli.lateral_wave_jitter)
-        x = start[0] + float(rng.uniform(-xy_jitter, xy_jitter))
-        y = start[1] + float(rng.uniform(-xy_jitter, xy_jitter))
-        yaw = ((yaw + float(rng.uniform(-yaw_jitter, yaw_jitter)) + math.pi) % (2.0 * math.pi)) - math.pi
-        speed_scale = 1.0 + float(rng.uniform(-speed_jitter, speed_jitter))
-        target_speed = max(args_cli.min_forward_speed, min(float(MAX_COMMAND[0]), args_cli.target_speed * speed_scale))
-        lateral_offset = float(rng.uniform(-lateral_offset_jitter, lateral_offset_jitter))
-        lateral_wave_amp = float(rng.uniform(-lateral_wave_jitter, lateral_wave_jitter))
-        lateral_wave_phase = float(rng.uniform(0.0, 2.0 * math.pi))
-
+        x = start[0]
+        y = start[1]
+        
         states[env_idx] = EnvState(
             task_name=task_name,
             task_index=task_index,
-            target_speed=target_speed,
-            lateral_offset=lateral_offset,
-            lateral_wave_amp=lateral_wave_amp,
-            lateral_wave_phase=lateral_wave_phase,
+            target_speed=args_cli.target_speed,
         )
         root_state[local_i, 0] = x
         root_state[local_i, 1] = y
         root_state[local_i, 2] = ROAD_Z + START_HEIGHT
         yaws[local_i] = yaw
+
     next_episode_index[0] += len(env_ids)
     root_state[:, :3] += scene.env_origins[env_ids_t]
     root_state[:, 3:7] = yaw_to_quat(yaws)
@@ -316,15 +283,7 @@ def reset_envs(
     robot.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids_t)
 
 
-def batched_project(
-    pos_xy: torch.Tensor,
-    routes: torch.Tensor,
-    lengths: torch.Tensor,
-    headings: torch.Tensor,
-    cumulative: torch.Tensor,
-    total_lengths: torch.Tensor,
-    states: list[EnvState],
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+def batched_project(pos_xy: torch.Tensor, routes: torch.Tensor, lengths: torch.Tensor, headings: torch.Tensor, cumulative: torch.Tensor, total_lengths: torch.Tensor, states: list[EnvState]) -> tuple:
     device = pos_xy.device
     task_ids = torch.tensor([state.task_index for state in states], dtype=torch.long, device=device)
     seg_ids = torch.tensor([state.segment_index for state in states], dtype=torch.long, device=device)
@@ -342,37 +301,14 @@ def batched_project(
     return starts, goals, t, error, progress_m, progress_ratio, heading, dist_to_goal
 
 
-def compute_commands(
-    local_pos: torch.Tensor,
-    yaw: torch.Tensor,
-    routes: torch.Tensor,
-    lengths: torch.Tensor,
-    headings: torch.Tensor,
-    cumulative: torch.Tensor,
-    total_lengths: torch.Tensor,
-    states: list[EnvState],
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    starts, goals, t, error, progress_m, progress_ratio, heading, dist = batched_project(
-        local_pos, routes, lengths, headings, cumulative, total_lengths, states
-    )
+def compute_commands(local_pos: torch.Tensor, yaw: torch.Tensor, routes: torch.Tensor, lengths: torch.Tensor, headings: torch.Tensor, cumulative: torch.Tensor, total_lengths: torch.Tensor, states: list[EnvState]) -> tuple:
+    starts, goals, t, error, progress_m, progress_ratio, heading, dist = batched_project(local_pos, routes, lengths, headings, cumulative, total_lengths, states)
     device = local_pos.device
     task_ids = torch.tensor([state.task_index for state in states], dtype=torch.long, device=device)
     seg_ids = torch.tensor([state.segment_index for state in states], dtype=torch.long, device=device)
     seg = goals - starts
     lookahead_t = torch.clamp(t + args_cli.lookahead_distance / torch.clamp(lengths[task_ids, seg_ids], min=1e-6), 0.0, 1.0)
     target = starts + lookahead_t.unsqueeze(-1) * seg
-    progress_phase = progress_ratio * (2.0 * math.pi * max(1, int(args_cli.laps)))
-    lateral_offset = torch.tensor(
-        [
-            state.lateral_offset + state.lateral_wave_amp * math.sin(float(progress_phase[idx].item()) + state.lateral_wave_phase)
-            for idx, state in enumerate(states)
-        ],
-        dtype=torch.float32,
-        device=device,
-    )
-    normal = torch.stack((-seg[:, 1], seg[:, 0]), dim=-1) / torch.clamp(lengths[task_ids, seg_ids].unsqueeze(-1), min=1e-6)
-    offset_scale = torch.sin(math.pi * lookahead_t).clamp(min=0.0, max=1.0)
-    target = target + (lateral_offset * offset_scale).unsqueeze(-1) * normal
     delta = target - local_pos
     target_bx = torch.cos(yaw) * delta[:, 0] + torch.sin(yaw) * delta[:, 1]
     target_by = -torch.sin(yaw) * delta[:, 0] + torch.cos(yaw) * delta[:, 1]
@@ -391,12 +327,10 @@ def compute_commands(
 
 
 def integrate(pos_xy: torch.Tensor, yaw: torch.Tensor, command: torch.Tensor, dt: float) -> tuple[torch.Tensor, torch.Tensor]:
-    vx = command[:, 0]
-    vy = command[:, 1]
-    wz = command[:, 2]
+    vx, wz = command[:, 0], command[:, 2]
     yaw_mid = yaw + 0.5 * wz * dt
-    new_x = pos_xy[:, 0] + (vx * torch.cos(yaw_mid) - vy * torch.sin(yaw_mid)) * dt
-    new_y = pos_xy[:, 1] + (vx * torch.sin(yaw_mid) + vy * torch.cos(yaw_mid)) * dt
+    new_x = pos_xy[:, 0] + (vx * torch.cos(yaw_mid)) * dt
+    new_y = pos_xy[:, 1] + (vx * torch.sin(yaw_mid)) * dt
     new_yaw = wrap_to_pi(yaw + wz * dt)
     return torch.stack((new_x, new_y), dim=-1), new_yaw
 
@@ -420,13 +354,10 @@ def main() -> None:
     physics_dt = min(float(args_cli.physics_dt), 1.0 / max(args_cli.control_hz, 1e-6))
     control_dt = 1.0 / max(args_cli.control_hz, 1e-6)
     substeps = max(1, int(round(control_dt / physics_dt)))
-    sim = sim_utils.SimulationContext(
-        sim_utils.SimulationCfg(dt=physics_dt, render_interval=substeps, device=args_cli.device)
-    )
+    sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=physics_dt, render_interval=substeps, device=args_cli.device))
     scene = InteractiveScene(SceneCfgClass())
     sim.reset()
-    robot = scene["robot"]
-    camera = scene["camera"]
+    robot, camera = scene["robot"], scene["camera"]
     device = robot.device
     wheel_joint_ids = get_wheel_joint_ids(robot)
     routes, lengths, headings, cumulative, total_lengths = build_route_tensors(device)
@@ -460,120 +391,72 @@ def main() -> None:
     signal.signal(signal.SIGTERM, stop_flag.request)
 
     print(f"[vec-record] Output session: {writer.session_dir}", flush=True)
-    print(f"[vec-record] num_envs={args_cli.num_envs} target_episodes={args_cli.num_episodes}", flush=True)
-
+    
     accepted = 0
     accepted_by_task = {task: 0 for task in TASKS}
-    target_by_task = {
-        "go_left": args_cli.num_episodes // 2,
-        "go_right": args_cli.num_episodes - args_cli.num_episodes // 2,
-    }
+    # Distribute targets evenly across all 4 tracks
+    target_by_task = {t: args_cli.num_episodes // 4 for t in TASKS[:-1]}
+    target_by_task[TASKS[-1]] = args_cli.num_episodes - sum(target_by_task.values())
+    
     failed = 0
     max_steps = max(1, int(math.ceil(args_cli.max_episode_time / control_dt)))
     wheel_targets_zero = torch.zeros((args_cli.num_envs, 4), dtype=torch.float32, device=device)
+
     try:
         while accepted < args_cli.num_episodes and simulation_app.is_running() and not stop_flag.requested:
             pos_w = robot.data.root_pos_w[:, :2]
             local_pos = pos_w - scene.env_origins[:, :2]
             _, _, yaw = euler_xyz_from_quat(robot.data.root_quat_w)
-            command, error, progress_m, progress_ratio, dist = compute_commands(
-                local_pos, yaw, routes, lengths, headings, cumulative, total_lengths, states
-            )
-            if args_cli.action_noise_std > 0.0:
-                noise = torch.tensor(
-                    rng.normal(0.0, args_cli.action_noise_std, size=(args_cli.num_envs, 3)).astype(np.float32),
-                    dtype=torch.float32,
-                    device=device,
-                ) * torch.tensor(MAX_COMMAND[:3], dtype=torch.float32, device=device)
-                command = command + noise
-                command[:, 0].clamp_(args_cli.min_forward_speed, args_cli.target_speed)
-                command[:, 1].clamp_(-0.18, 0.18)
-                command[:, 2].clamp_(-args_cli.max_wz, args_cli.max_wz)
+            command, error, progress_m, progress_ratio, dist = compute_commands(local_pos, yaw, routes, lengths, headings, cumulative, total_lengths, states)
 
             rgb_batch = camera.data.output.get("rgb")
-            if rgb_batch is None or rgb_batch.numel() == 0:
-                rgb_np = np.zeros((args_cli.num_envs, args_cli.image_height, args_cli.image_width, 3), dtype=np.uint8)
-            else:
-                rgb = rgb_batch[..., :3]
-                if rgb.dtype != torch.uint8:
-                    rgb = torch.clamp(rgb, 0, 255).to(torch.uint8)
-                rgb_np = rgb.detach().cpu().numpy()
+            rgb_np = np.zeros((args_cli.num_envs, args_cli.image_height, args_cli.image_width, 3), dtype=np.uint8) if rgb_batch is None or rgb_batch.numel() == 0 else torch.clamp(rgb_batch[..., :3], 0, 255).to(torch.uint8).detach().cpu().numpy()
 
             command_np = command.detach().cpu().numpy()
-            action_np = np.clip(
-                np.concatenate([command_np, np.zeros((args_cli.num_envs, 1), dtype=np.float32)], axis=1) / MAX_COMMAND,
-                -1.0,
-                1.0,
-            ).astype(np.float32)
-            error_np = error.detach().cpu().numpy()
-            progress_np = progress_ratio.detach().cpu().numpy()
-            dist_np = dist.detach().cpu().numpy()
+            action_np = np.clip(np.concatenate([command_np, np.zeros((args_cli.num_envs, 1), dtype=np.float32)], axis=1) / MAX_COMMAND, -1.0, 1.0).astype(np.float32)
+            error_np, progress_np, dist_np = error.detach().cpu().numpy(), progress_ratio.detach().cpu().numpy(), dist.detach().cpu().numpy()
 
             finished_ids: list[int] = []
             for env_idx, state in enumerate(states):
                 if state.finished:
                     continue
                 state.elapsed_steps += 1
-                is_final = state.segment_index >= len(LEFT_POINTS) - 2
+                
+                # FIXED: Checks safety limits dynamically using the targeted path length mapping
+                is_final = state.segment_index >= len(TASK_ROUTES_LIST[state.task_index]) - 2
                 if is_final and (dist_np[env_idx] <= args_cli.switch_distance or progress_np[env_idx] >= args_cli.finish_progress):
-                    state.finished = True
-                    state.success = True
-                    state.terminal_reason = "goal_reached"
+                    state.finished, state.success, state.terminal_reason = True, True, "goal_reached"
                     finished_ids.append(env_idx)
                     continue
                 if dist_np[env_idx] <= args_cli.switch_distance and not is_final:
                     state.segment_index += 1
                     continue
                 if error_np[env_idx] > args_cli.off_track_abort_distance:
-                    state.finished = True
-                    state.success = False
-                    state.terminal_reason = "off_track"
+                    state.finished, state.success, state.terminal_reason = True, False, "off_track"
                     finished_ids.append(env_idx)
                     continue
                 if state.elapsed_steps >= max_steps:
-                    state.finished = True
-                    state.success = False
-                    state.terminal_reason = "timeout"
+                    state.finished, state.success, state.terminal_reason = True, False, "timeout"
                     finished_ids.append(env_idx)
                     continue
                 if progress_np[env_idx] >= state.best_progress + args_cli.progress_epsilon:
                     state.best_progress = float(progress_np[env_idx])
                     state.last_progress_time = state.elapsed_steps * control_dt
                 if state.elapsed_steps * control_dt - state.last_progress_time >= args_cli.stuck_timeout:
-                    state.finished = True
-                    state.success = False
-                    state.terminal_reason = "stuck"
+                    state.finished, state.success, state.terminal_reason = True, False, "stuck"
                     finished_ids.append(env_idx)
                     continue
 
                 stop_value = 1.0 if progress_np[env_idx] >= 0.97 else 0.0
-                command4 = np.asarray(
-                    [command_np[env_idx, 0], command_np[env_idx, 1], command_np[env_idx, 2], stop_value],
-                    dtype=np.float32,
-                )
+                command4 = np.asarray([command_np[env_idx, 0], command_np[env_idx, 1], command_np[env_idx, 2], stop_value], dtype=np.float32)
                 action4 = action_np[env_idx].copy()
                 action4[3] = stop_value
-                state.frames.append(
-                    ACTEpisodeFrame(
-                        image_rgb=rgb_np[env_idx],
-                        timestamp=float((state.elapsed_steps - 1) * control_dt),
-                        state=state.prev_action.copy(),
-                        action=action4.copy(),
-                        command=command4.copy(),
-                        track_error=float(error_np[env_idx]),
-                        route_progress=float(progress_np[env_idx]),
-                        pose_xy=(float(local_pos[env_idx, 0].item()), float(local_pos[env_idx, 1].item())),
-                        pose_yaw=float(yaw[env_idx].item()),
-                    )
-                )
-                state.prev_action = action4
-                state.errors.append(float(error_np[env_idx]))
+                state.frames.append(ACTEpisodeFrame(image_rgb=rgb_np[env_idx], timestamp=float((state.elapsed_steps - 1) * control_dt), state=state.prev_action.copy(), action=action4.copy(), command=command4.copy(), track_error=float(error_np[env_idx]), route_progress=float(progress_np[env_idx]), pose_xy=(float(local_pos[env_idx, 0].item()), float(local_pos[env_idx, 1].item())), pose_yaw=float(yaw[env_idx].item())))
+                state.prev_action, state.errors = action4, [float(error_np[env_idx])]
 
             new_xy, new_yaw = integrate(local_pos, yaw, command, control_dt)
             root_pose = torch.zeros((args_cli.num_envs, 7), dtype=torch.float32, device=device)
-            root_pose[:, :2] = new_xy + scene.env_origins[:, :2]
-            root_pose[:, 2] = ROAD_Z + START_HEIGHT
-            root_pose[:, 3:7] = yaw_to_quat(new_yaw)
+            root_pose[:, :2], root_pose[:, 2], root_pose[:, 3:7] = new_xy + scene.env_origins[:, :2], ROAD_Z + START_HEIGHT, yaw_to_quat(new_yaw)
             robot.write_root_pose_to_sim(root_pose)
             robot.write_root_velocity_to_sim(torch.zeros((args_cli.num_envs, 6), dtype=torch.float32, device=device))
             robot.set_joint_velocity_target(twist_to_wheel_targets(command, device), joint_ids=wheel_joint_ids)
@@ -587,37 +470,20 @@ def main() -> None:
                 reset_ids = []
                 for env_idx in finished_ids:
                     state = states[env_idx]
-                    if (
-                        state.success
-                        and state.frames
-                        and accepted < args_cli.num_episodes
-                        and accepted_by_task[state.task_name] < target_by_task[state.task_name]
-                    ):
+                    if state.success and state.frames and accepted < args_cli.num_episodes and accepted_by_task[state.task_name] < target_by_task[state.task_name]:
                         episode_dir = writer.save_episode(accepted, make_result(state, control_dt))
                         accepted_by_task[state.task_name] += 1
                         accepted += 1
-                        print(
-                            f"[vec-record] saved episode_{accepted - 1:05d} env={env_idx} "
-                            f"{state.task_name} frames={len(state.frames)} "
-                            f"left={accepted_by_task['go_left']}/{target_by_task['go_left']} "
-                            f"right={accepted_by_task['go_right']}/{target_by_task['go_right']} -> {episode_dir}",
-                            flush=True,
-                        )
+                        print(f"[vec-record] saved episode_{accepted - 1:05d} env={env_idx} {state.task_name} frames={len(state.frames)} -> {episode_dir}", flush=True)
                     elif not state.success:
                         failed += 1
                         writer.record_failure()
-                        print(
-                            f"[vec-record] failed env={env_idx} reason={state.terminal_reason} "
-                            f"progress={state.best_progress:.2f}",
-                            flush=True,
-                        )
                     if accepted < args_cli.num_episodes:
                         reset_ids.append(env_idx)
                 if reset_ids:
                     reset_envs(scene, states, reset_ids, rng, next_episode_index)
                     scene.write_data_to_sim()
-                    for _ in range(args_cli.settle_steps):
-                        sim.step()
+                    for _ in range(args_cli.settle_steps): sim.step()
                     scene.update(physics_dt)
                     camera.update(physics_dt)
     finally:
@@ -628,8 +494,7 @@ def main() -> None:
 def close_app_and_exit(code: int = 0) -> None:
     timer = threading.Timer(5.0, lambda: os._exit(code))
     timer.daemon = True
-    try:
-        simulation_app.close()
+    try: simulation_app.close()
     finally:
         timer.cancel()
         os._exit(code)
